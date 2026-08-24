@@ -61,8 +61,9 @@ test("uses the grey f mark and a concise bookmark title", async () => {
   assert.match(layout, /const title = "Famochat"/);
   assert.doesNotMatch(layout, /Keep your people close/);
   assert.match(page, /className="brand"[^>]*><strong[^>]*>f<\/strong>/);
-  assert.match(css, /\.brand \{[^}]*background:\s*#8d8d8b/);
+  assert.match(css, /\.brand \{[^}]*background:\s*#8d8d8b;[^}]*color:\s*#080808/);
   assert.match(favicon, /fill="#8D8D8B"/);
+  assert.match(favicon, /fill="#080808"/);
   assert.match(favicon, />f<\/text>/);
 });
 
