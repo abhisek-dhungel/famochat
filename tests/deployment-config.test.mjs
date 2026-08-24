@@ -56,6 +56,30 @@ test("keeps desktop chat history in its own scrollable area", async () => {
   assert.match(css, /\.messages \{[^}]*flex:\s*1 1 0;[^}]*overflow-y:\s*auto/);
 });
 
+test("formats message timestamps in the viewer's local timezone", async () => {
+  const [state, page] = await Promise.all([
+    readFile(new URL("lib/state.ts", root), "utf8"),
+    readFile(new URL("app/page.tsx", root), "utf8"),
+  ]);
+  assert.match(state, /createdAt:\s*Number\(row\.created_at\)/);
+  assert.doesNotMatch(state, /toLocaleTimeString/);
+  assert.match(page, /new Intl\.DateTimeFormat\(undefined, \{ hour: "numeric", minute: "2-digit" \}\)/);
+  assert.match(page, /formatMessageTime\(message\.createdAt/);
+});
+
+test("renders compact photo previews and a custom voice-message waveform", async () => {
+  const [page, css] = await Promise.all([
+    readFile(new URL("app/page.tsx", root), "utf8"),
+    readFile(new URL("app/globals.css", root), "utf8"),
+  ]);
+  assert.match(page, /function AudioMessage/);
+  assert.match(page, /className="audio-waveform"/);
+  assert.doesNotMatch(page, /<audio[^>]*controls/);
+  assert.match(css, /\.bubble\.media-bubble\.visual-media-bubble \{[^}]*width:\s*min\(300px, 72vw\)/);
+  assert.match(css, /\.message-image,[^}]*object-fit:\s*cover/);
+  assert.match(css, /\.message-audio audio \{\s*display:\s*none/);
+});
+
 test("uses the wordmark in-app and the grey f favicon", async () => {
   const [layout, page, favicon] = await Promise.all([
     readFile(new URL("app/layout.tsx", root), "utf8"),

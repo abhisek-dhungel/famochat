@@ -7,13 +7,6 @@ function toneFor(value: string) {
   return tones[total % tones.length];
 }
 
-function displayTime(value: number, mine: boolean) {
-  const date = new Date(value);
-  const sameDay = date.toDateString() === new Date().toDateString();
-  const time = date.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
-  return `${sameDay ? time : date.toLocaleDateString([], { month: "short", day: "numeric" })}${mine ? " · Sent" : ""}`;
-}
-
 function contextAge(value: number | null) {
   if (!value) return "Waiting for the first location update";
   const minutes = Math.max(0, Math.floor((Date.now() - value) / 60000));
@@ -108,7 +101,7 @@ export async function getAccountState(user: SessionUser) {
       id: Number(row.id),
       text: String(row.text ?? ""),
       from: mine ? "me" : "them",
-      time: displayTime(Number(row.created_at), mine),
+      createdAt: Number(row.created_at),
       kind: String(row.kind),
       mediaUrl: row.media_url ? String(row.media_url) : undefined,
       mediaPublicId: row.media_public_id ? String(row.media_public_id) : undefined,

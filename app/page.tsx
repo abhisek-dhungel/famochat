@@ -3,7 +3,7 @@
 /* eslint-disable @next/next/no-img-element, jsx-a11y/media-has-caption, jsx-a11y/no-autofocus, jsx-a11y/no-noninteractive-element-interactions, jsx-a11y/no-static-element-interactions, react-hooks/purity */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { ChangeEvent, FormEvent } from "react";
+import type { ChangeEvent, FormEvent, MouseEvent as ReactMouseEvent } from "react";
 
 type Screen = "welcome" | "signup" | "signin" | "app";
 type CircleType = "Family" | "Relative" | "Close friend";
@@ -14,7 +14,7 @@ type Message = {
   id: number;
   text: string;
   from: "me" | "them";
-  time: string;
+  createdAt: number;
   kind?: MessageKind;
   mediaUrl?: string;
   mediaPublicId?: string;
@@ -167,6 +167,23 @@ function toneFor(value: string) {
   return tones[total % tones.length];
 }
 
+function formatMessageTime(value: number, mine: boolean) {
+  const date = new Date(value);
+  const now = new Date();
+  const sameDay = date.getFullYear() === now.getFullYear()
+    && date.getMonth() === now.getMonth()
+    && date.getDate() === now.getDate();
+  const label = sameDay
+    ? new Intl.DateTimeFormat(undefined, { hour: "numeric", minute: "2-digit" }).format(date)
+    : new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric" }).format(date);
+  return `${label}${mine ? " · Sent" : ""}`;
+}
+
+function formatAudioTime(value: number) {
+  const seconds = Math.max(0, Math.floor(value));
+  return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`;
+}
+
 type AccountResponse = { account?: Account; error?: string };
 
 async function accountRequest(url: string, init?: RequestInit) {
@@ -204,19 +221,56 @@ async function uploadToCloudinary(file: Blob) {
   return { mediaUrl: uploaded.secure_url, mediaPublicId: uploaded.public_id };
 }
 
+const waveformBars = [12, 20, 16, 27, 18, 31, 22, 14, 25, 34, 19, 28, 16, 23, 32, 20, 13, 26, 35, 22, 17, 29, 21, 14, 24, 18];
+
+function AudioMessage({ message }: { message: Message }) {
+  const audioRef = useRef<HTMLAudioElement>(null);
+  const [playing, setPlaying] = useState(false);
+  const [elapsed, setElapsed] = useState(0);
+  const [duration, setDuration] = useState(message.duration ?? 0);
+  const progress = duration > 0 ? Math.min(elapsed / duration, 1) : 0;
+
+  const togglePlayback = () => {
+    const audio = audioRef.current;
+    if (!audio) return;
+    if (audio.paused) {
+      void audio.play().catch(() => setPlaying(false));
+    } else {
+      audio.pause();
+    }
+  };
+
+  const seek = (event: ReactMouseEvent<HTMLButtonElement>) => {
+    const audio = audioRef.current;
+    const availableDuration = Number.isFinite(audio?.duration) ? audio?.duration ?? duration : duration;
+    if (!audio || availableDuration <= 0) return;
+    const bounds = event.currentTarget.getBoundingClientRect();
+    const ratio = Math.min(1, Math.max(0, (event.clientX - bounds.left) / bounds.width));
+    audio.currentTime = availableDuration * ratio;
+    setElapsed(audio.currentTime);
+  };
+
+  return <div className="message-audio">
+    <button type="button" className="audio-play" aria-label={playing ? "Pause voice message" : "Play voice message"} onClick={togglePlayback}>{playing ? "Ⅱ" : "▶"}</button>
+    <button type="button" className="audio-waveform" aria-label="Seek voice message" onClick={seek}>{waveformBars.map((height, index) => <i className={(index + 1) / waveformBars.length <= progress ? "played" : ""} style={{ height }} key={`${height}-${index}`} />)}</button>
+    <span className="audio-duration">{formatAudioTime(elapsed > 0 ? elapsed : duration)}</span>
+    <audio ref={audioRef} src={message.mediaUrl} preload="metadata" aria-label="Voice message" onLoadedMetadata={(event) => { if (Number.isFinite(event.currentTarget.duration)) setDuration(event.currentTarget.duration); }} onTimeUpdate={(event) => setElapsed(event.currentTarget.currentTime)} onPlay={() => setPlaying(true)} onPause={() => setPlaying(false)} onEnded={() => { setPlaying(false); setElapsed(0); }} />
+  </div>;
+}
+
 function MediaMessage({ message, onPreview }: { message: Message; onPreview?: (message: Message) => void }) {
   const source = message.mediaUrl;
   if (!source) return <span className="media-unavailable">Attachment unavailable</span>;
   if (message.kind === "image") {
     const image = <img className="message-image" src={source} alt={message.fileName || "Shared photo"} />;
-    return onPreview ? <button type="button" className="message-image-button" onClick={() => onPreview(message)} aria-label={`Open ${message.fileName || "shared photo"} fullscreen`}>{image}<span>Expand</span></button> : image;
+    return onPreview ? <button type="button" className="message-image-button" onClick={() => onPreview(message)} aria-label={`Open ${message.fileName || "shared photo"} fullscreen`}>{image}</button> : image;
   }
   if (message.kind === "video") return <video className="message-video" src={source} controls playsInline preload="metadata" aria-label={message.fileName || "Shared video"} />;
   if (message.kind === "document") {
     const extension = message.fileName?.split(".").pop()?.slice(0, 4).toUpperCase() || "FILE";
     return <a className="message-document" href={source} download={message.fileName || "Famochat document"}><i>{extension}</i><span><strong>{message.fileName || "Shared document"}</strong><small>Tap to download</small></span><b>↓</b></a>;
   }
-  return <div className="message-audio"><span>Voice message</span><audio src={source} controls preload="metadata" aria-label="Voice message" /></div>;
+  return <AudioMessage message={message} />;
 }
 
 function Brand() {
@@ -575,7 +629,7 @@ function Messenger({ account, onSignOut, onUpdateContact, onSendRequest, onAppro
           <section className="chat-pane">
             {selected ? <><div className="chat-topbar"><button className="mobile-back" onClick={() => setMobileList(true)} aria-label="Back to people">‹</button><button className="desktop-collapse" onClick={() => setCollapsed((value) => !value)} aria-label="Toggle people panel">◫</button><span className={`avatar compact ${selected.tone}`}>{initials(selected.name)}<i className={selected.online ? "online" : "offline"} /></span><div className="chat-title"><strong>{selected.name}</strong><small>{selected.online ? `${selected.activity} · now` : "Offline"}</small></div><button className="circle-action" aria-label={`Call ${selected.name}`} onClick={() => setToast(`Starting a private call with ${selected.name}…`)}>⌁</button><button className="circle-action" aria-label="Conversation details" onClick={() => setDetailsOpen(true)}>•••</button></div>
             {selected.liveContextShared ? <div className="live-card"><div className="live-map" aria-hidden="true"><span className="road road-one" /><span className="road road-two" /><span className="map-pin"><i /></span></div><div className="live-primary"><span className="live-label"><i /> Live context</span><h2>{selected.location}</h2><p>{selected.eta}</p></div><div className="live-stats"><div><span>{selected.activity}</span><strong>{selected.speed}</strong></div><div><span>Weather</span><strong>{selected.temperature} <small>{selected.weather}</small></strong></div><div><span>Battery</span><strong>{selected.battery == null ? "—" : `${selected.battery}%`} <small>{selected.battery == null ? "Unavailable" : selected.charging ? "Charging" : selected.battery > 25 ? "Good" : "Low"}</small></strong></div></div><button className="live-more" aria-label="Open live map" onClick={() => setToast(`${selected.name} is near ${selected.location}.`)}>↗</button></div> : <div className="private-card"><span>◎</span><div><strong>{selected.name}’s live context is private</strong><p>Location, weather, and battery appear here when {selected.name} shares them with you.</p></div><button onClick={() => toggleLocation(selected)}>{selected.locationShared ? "Pause mine" : "Share mine"}</button></div>}
-            <div className="messages" ref={messagesRef} role="log" aria-live="polite" aria-relevant="additions text"><div className="day-label">Today</div>{activeMessages.map((message) => { const kind = message.kind ?? "text"; const visualMedia = kind === "image" || kind === "video"; return <div className={`bubble ${message.from === "me" ? "outgoing" : "incoming"} ${kind !== "text" ? "media-bubble" : ""} ${visualMedia ? "visual-media-bubble" : ""}`} key={message.id}>{kind === "text" ? message.text : <MediaMessage message={message} onPreview={openPhotoPreview} />}<time>{message.time}</time></div>; })}</div>
+            <div className="messages" ref={messagesRef} role="log" aria-live="polite" aria-relevant="additions text"><div className="day-label">Today</div>{activeMessages.map((message) => { const kind = message.kind ?? "text"; const visualMedia = kind === "image" || kind === "video"; return <div className={`bubble ${message.from === "me" ? "outgoing" : "incoming"} ${kind !== "text" ? "media-bubble" : ""} ${visualMedia ? "visual-media-bubble" : ""} ${kind === "image" ? "image-media-bubble" : ""} ${kind === "audio" ? "audio-media-bubble" : ""}`} key={message.id}>{kind === "text" ? message.text : <MediaMessage message={message} onPreview={openPhotoPreview} />}<time>{formatMessageTime(message.createdAt, message.from === "me")}</time></div>; })}</div>
             <form className={`composer ${recording ? "is-recording" : ""}`} onSubmit={sendMessage}>
               <div className="composer-tool attachment-tool">
                 <button type="button" className={`round-action ${attachmentMenuOpen ? "active" : ""}`} aria-label="Share a photo, video, or document" aria-expanded={attachmentMenuOpen} onClick={() => { setAttachmentMenuOpen((value) => !value); setEmojiOpen(false); }}>+</button>
