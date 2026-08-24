@@ -80,17 +80,21 @@ test("renders compact photo previews and a custom voice-message waveform", async
   assert.match(css, /\.message-audio audio \{\s*display:\s*none/);
 });
 
-test("uses the wordmark in-app and the grey f favicon", async () => {
-  const [layout, page, favicon] = await Promise.all([
+test("uses the black f logo on white with a green dot", async () => {
+  const [layout, page, css, favicon] = await Promise.all([
     readFile(new URL("app/layout.tsx", root), "utf8"),
     readFile(new URL("app/page.tsx", root), "utf8"),
+    readFile(new URL("app/globals.css", root), "utf8"),
     readFile(new URL("public/favicon.svg", root), "utf8"),
   ]);
   assert.match(layout, /const title = "Famochat"/);
   assert.doesNotMatch(layout, /Keep your people close/);
-  assert.match(page, /className="brand-famo">famo<\/strong><span className="brand-chat">chat<\/span>/);
-  assert.match(favicon, /fill="#8D8D8B"/);
+  assert.match(page, /className="brand"[^>]*><strong[^>]*>f<\/strong><i className="brand-dot"/);
+  assert.match(css, /\.brand \{[^}]*background:\s*#fff;[^}]*color:\s*#080808/);
+  assert.match(css, /\.brand-dot \{[^}]*background:\s*var\(--green\)/);
+  assert.match(favicon, /fill="#FFFFFF"/);
   assert.match(favicon, /fill="#080808"/);
+  assert.match(favicon, /fill="#27A85F"/);
   assert.match(favicon, />f<\/text>/);
 });
 
