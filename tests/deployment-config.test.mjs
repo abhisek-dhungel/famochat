@@ -45,6 +45,12 @@ test("keeps the mobile message composer stable when the keyboard opens", async (
   assert.match(css, /\.composer input \{[^}]*min-width:\s*0/);
 });
 
+test("keeps desktop chat history in its own scrollable area", async () => {
+  const css = await readFile(new URL("app/globals.css", root), "utf8");
+  assert.match(css, /\.chat-pane \{[^}]*min-height:\s*0;[^}]*overflow:\s*hidden/);
+  assert.match(css, /\.messages \{[^}]*flex:\s*1 1 0;[^}]*overflow-y:\s*auto/);
+});
+
 test("persists live context only for contacts it is shared with", async () => {
   const [database, state, actions] = await Promise.all([
     readFile(new URL("db/index.ts", root), "utf8"),
