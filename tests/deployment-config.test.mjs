@@ -51,17 +51,15 @@ test("keeps desktop chat history in its own scrollable area", async () => {
   assert.match(css, /\.messages \{[^}]*flex:\s*1 1 0;[^}]*overflow-y:\s*auto/);
 });
 
-test("uses the grey f mark and a concise bookmark title", async () => {
-  const [layout, page, css, favicon] = await Promise.all([
+test("uses the wordmark in-app and the grey f favicon", async () => {
+  const [layout, page, favicon] = await Promise.all([
     readFile(new URL("app/layout.tsx", root), "utf8"),
     readFile(new URL("app/page.tsx", root), "utf8"),
-    readFile(new URL("app/globals.css", root), "utf8"),
     readFile(new URL("public/favicon.svg", root), "utf8"),
   ]);
   assert.match(layout, /const title = "Famochat"/);
   assert.doesNotMatch(layout, /Keep your people close/);
-  assert.match(page, /className="brand"[^>]*><strong[^>]*>f<\/strong>/);
-  assert.match(css, /\.brand \{[^}]*background:\s*#8d8d8b;[^}]*color:\s*#080808/);
+  assert.match(page, /className="brand-famo">famo<\/strong><span className="brand-chat">chat<\/span>/);
   assert.match(favicon, /fill="#8D8D8B"/);
   assert.match(favicon, /fill="#080808"/);
   assert.match(favicon, />f<\/text>/);
