@@ -42,14 +42,17 @@ type Person = {
   online: boolean;
   approved: boolean;
   locationShared: boolean;
+  liveContextShared: boolean;
   parentalControl: boolean;
+  contactRemovalLocked: boolean;
   activity: string;
   speed: string;
   location: string;
   eta: string;
   temperature: string;
   weather: string;
-  battery: number;
+  battery: number | null;
+  charging: boolean | null;
   tone: string;
 };
 
@@ -87,7 +90,73 @@ type AddPersonPayload = {
   relation: string;
 };
 
+type LiveContext = {
+  latitude: number;
+  longitude: number;
+  locationLabel: string;
+  temperature: number | null;
+  weather: string;
+  battery: number | null;
+  charging: boolean | null;
+};
+
+type BatteryManagerLike = {
+  level: number;
+  charging: boolean;
+};
+
 const tones = ["tone-dark", "tone-mid", "tone-light", "tone-soft", "tone-silver"];
+
+function weatherLabel(code: number | undefined) {
+  if (code === 0) return "Clear";
+  if (code === 1) return "Mostly clear";
+  if (code === 2) return "Partly cloudy";
+  if (code === 3) return "Overcast";
+  if (code === 45 || code === 48) return "Foggy";
+  if (code != null && code >= 51 && code <= 57) return "Drizzle";
+  if (code != null && code >= 61 && code <= 67) return "Rain";
+  if (code != null && code >= 71 && code <= 77) return "Snow";
+  if (code != null && code >= 80 && code <= 82) return "Rain showers";
+  if (code != null && code >= 85 && code <= 86) return "Snow showers";
+  if (code != null && code >= 95) return "Thunderstorm";
+  return "Unavailable";
+}
+
+async function collectLiveContext(position: GeolocationPosition): Promise<LiveContext> {
+  const { latitude, longitude } = position.coords;
+  const weatherUrl = new URL("https://api.open-meteo.com/v1/forecast");
+  weatherUrl.searchParams.set("latitude", String(latitude));
+  weatherUrl.searchParams.set("longitude", String(longitude));
+  weatherUrl.searchParams.set("current", "temperature_2m,weather_code");
+  weatherUrl.searchParams.set("timezone", "auto");
+
+  const placeUrl = new URL("https://api.bigdatacloud.net/data/reverse-geocode-client");
+  placeUrl.searchParams.set("latitude", String(latitude));
+  placeUrl.searchParams.set("longitude", String(longitude));
+  placeUrl.searchParams.set("localityLanguage", "en");
+
+  const batteryGetter = (navigator as Navigator & { getBattery?: () => Promise<BatteryManagerLike> }).getBattery;
+  const [weatherResult, placeResult, batteryResult] = await Promise.allSettled([
+    fetch(weatherUrl, { cache: "no-store" }).then((response) => response.ok ? response.json() : null),
+    fetch(placeUrl, { cache: "no-store" }).then((response) => response.ok ? response.json() : null),
+    batteryGetter ? batteryGetter.call(navigator) : Promise.resolve(null),
+  ]);
+
+  const weatherData = weatherResult.status === "fulfilled" ? weatherResult.value as { current?: { temperature_2m?: number; weather_code?: number } } | null : null;
+  const placeData = placeResult.status === "fulfilled" ? placeResult.value as { locality?: string; city?: string; principalSubdivision?: string; countryName?: string } | null : null;
+  const batteryData = batteryResult.status === "fulfilled" ? batteryResult.value : null;
+  const placeParts = [placeData?.locality || placeData?.city, placeData?.principalSubdivision, placeData?.countryName].filter((part, index, values) => part && values.indexOf(part) === index);
+
+  return {
+    latitude,
+    longitude,
+    locationLabel: placeParts.join(", ") || `${latitude.toFixed(4)}°, ${longitude.toFixed(4)}°`,
+    temperature: typeof weatherData?.current?.temperature_2m === "number" ? weatherData.current.temperature_2m : null,
+    weather: weatherLabel(weatherData?.current?.weather_code),
+    battery: batteryData ? Math.round(batteryData.level * 100) : null,
+    charging: batteryData?.charging ?? null,
+  };
+}
 
 function initials(name: string) {
   return name.split(/\s+/).filter(Boolean).slice(0, 2).map((part) => part[0]?.toUpperCase()).join("") || "K";
@@ -505,7 +574,7 @@ function Messenger({ account, onSignOut, onUpdateContact, onSendRequest, onAppro
           </aside>
           <section className="chat-pane">
             {selected ? <><div className="chat-topbar"><button className="mobile-back" onClick={() => setMobileList(true)} aria-label="Back to people">‹</button><button className="desktop-collapse" onClick={() => setCollapsed((value) => !value)} aria-label="Toggle people panel">◫</button><span className={`avatar compact ${selected.tone}`}>{initials(selected.name)}<i className={selected.online ? "online" : "offline"} /></span><div className="chat-title"><strong>{selected.name}</strong><small>{selected.online ? `${selected.activity} · now` : "Offline"}</small></div><button className="circle-action" aria-label={`Call ${selected.name}`} onClick={() => setToast(`Starting a private call with ${selected.name}…`)}>⌁</button><button className="circle-action" aria-label="Conversation details" onClick={() => setDetailsOpen(true)}>•••</button></div>
-            {selected.locationShared ? <div className="live-card"><div className="live-map" aria-hidden="true"><span className="road road-one" /><span className="road road-two" /><span className="map-pin"><i /></span></div><div className="live-primary"><span className="live-label"><i /> Live context</span><h2>{selected.location}</h2><p>{selected.eta} · Updated just now</p></div><div className="live-stats"><div><span>{selected.activity}</span><strong>{selected.speed}</strong></div><div><span>Weather</span><strong>{selected.temperature} <small>{selected.weather}</small></strong></div><div><span>Battery</span><strong>{selected.battery}% <small>{selected.battery > 25 ? "Good" : "Low"}</small></strong></div></div><button className="live-more" aria-label="Open live map" onClick={() => setToast("Live map expanded.")}>↗</button></div> : <div className="private-card"><span>◎</span><div><strong>{selected.name}’s live context is private</strong><p>Location, movement, weather, and battery appear here only while sharing is on.</p></div><button onClick={() => toggleLocation(selected)}>Share mine</button></div>}
+            {selected.liveContextShared ? <div className="live-card"><div className="live-map" aria-hidden="true"><span className="road road-one" /><span className="road road-two" /><span className="map-pin"><i /></span></div><div className="live-primary"><span className="live-label"><i /> Live context</span><h2>{selected.location}</h2><p>{selected.eta}</p></div><div className="live-stats"><div><span>{selected.activity}</span><strong>{selected.speed}</strong></div><div><span>Weather</span><strong>{selected.temperature} <small>{selected.weather}</small></strong></div><div><span>Battery</span><strong>{selected.battery == null ? "—" : `${selected.battery}%`} <small>{selected.battery == null ? "Unavailable" : selected.charging ? "Charging" : selected.battery > 25 ? "Good" : "Low"}</small></strong></div></div><button className="live-more" aria-label="Open live map" onClick={() => setToast(`${selected.name} is near ${selected.location}.`)}>↗</button></div> : <div className="private-card"><span>◎</span><div><strong>{selected.name}’s live context is private</strong><p>Location, weather, and battery appear here when {selected.name} shares them with you.</p></div><button onClick={() => toggleLocation(selected)}>{selected.locationShared ? "Pause mine" : "Share mine"}</button></div>}
             <div className="messages" ref={messagesRef} role="log" aria-live="polite" aria-relevant="additions text"><div className="day-label">Today</div>{activeMessages.map((message) => { const kind = message.kind ?? "text"; const visualMedia = kind === "image" || kind === "video"; return <div className={`bubble ${message.from === "me" ? "outgoing" : "incoming"} ${kind !== "text" ? "media-bubble" : ""} ${visualMedia ? "visual-media-bubble" : ""}`} key={message.id}>{kind === "text" ? message.text : <MediaMessage message={message} onPreview={openPhotoPreview} />}<time>{message.time}</time></div>; })}</div>
             <form className={`composer ${recording ? "is-recording" : ""}`} onSubmit={sendMessage}>
               <div className="composer-tool attachment-tool">
@@ -531,7 +600,7 @@ function Messenger({ account, onSignOut, onUpdateContact, onSendRequest, onAppro
 
       {noticesOpen && <div className="modal-backdrop" onMouseDown={() => setNoticesOpen(false)}><section className="glass-modal request-modal" onMouseDown={(event) => event.stopPropagation()}><div className="modal-handle" /><header><div><span className="kicker">Relationship requests</span><h2>Your inbox</h2></div><button className="close-button" onClick={() => setNoticesOpen(false)}>×</button></header>{account.requests.length > 0 ? <div className="request-stack">{account.requests.map((request) => <div className="request-card" key={request.id}><span className={`avatar ${toneFor(request.fromUsername)}`}>{initials(request.fromName)}<i className="online" /></span><div><strong>{request.fromName}</strong><p><b>@{request.fromUsername}</b> wants to add you as <b>{request.relation}</b>.</p><span className="category-chip">{request.category}</span></div><div className="request-actions"><button onClick={() => { void onDeclineRequest(request).then((error) => { if (error) setToast(error); }); }}>Decline</button><button className="dark" onClick={() => { void onApproveRequest(request).then((error) => setToast(error || `${request.fromName} is now in your circle.`)); }}>Approve</button></div></div>)}</div> : <div className="request-done request-empty"><span>◇</span><strong>No requests yet</strong><p>Requests sent to this username will appear here.</p></div>}<div className="modal-note">Relationship requests sync automatically across signed-in devices.</div></section></div>}
 
-      {detailsOpen && selected && <div className="modal-backdrop" onMouseDown={() => setDetailsOpen(false)}><section className="glass-modal contact-modal" onMouseDown={(event) => event.stopPropagation()}><div className="modal-handle" /><header><div><span className="kicker">Conversation details</span><h2>{selected.name}</h2></div><button className="close-button" onClick={() => setDetailsOpen(false)}>×</button></header><div className="contact-profile"><span className={`avatar contact-avatar ${selected.tone}`}>{initials(selected.name)}<i className={selected.online ? "online" : "offline"} /></span><strong>{selected.name}</strong><small>@{selected.username}</small></div><div className="contact-settings"><div><span>Relationship</span><strong>{selected.relation}</strong></div><div><span>Circle</span><strong>{selected.category}</strong></div><button onClick={() => { setDetailsOpen(false); toggleLocation(selected); }}><span>Location sharing</span><strong>{selected.locationShared ? selected.parentalControl ? "On · Parental control" : "On" : "Off"} <i>›</i></strong></button></div><button className="danger-button" onClick={() => { setDetailsOpen(false); setRemoveTarget(selected); }}><span>−</span><div><strong>Remove from circle</strong><small>Ends chat access and location sharing</small></div><b>›</b></button></section></div>}
+      {detailsOpen && selected && <div className="modal-backdrop" onMouseDown={() => setDetailsOpen(false)}><section className="glass-modal contact-modal" onMouseDown={(event) => event.stopPropagation()}><div className="modal-handle" /><header><div><span className="kicker">Conversation details</span><h2>{selected.name}</h2></div><button className="close-button" onClick={() => setDetailsOpen(false)}>×</button></header><div className="contact-profile"><span className={`avatar contact-avatar ${selected.tone}`}>{initials(selected.name)}<i className={selected.online ? "online" : "offline"} /></span><strong>{selected.name}</strong><small>@{selected.username}</small></div><div className="contact-settings"><div><span>Relationship</span><strong>{selected.relation}</strong></div><div><span>Circle</span><strong>{selected.category}</strong></div><button onClick={() => { setDetailsOpen(false); toggleLocation(selected); }}><span>Location sharing</span><strong>{selected.locationShared ? selected.parentalControl ? "On · Parental control" : "On" : "Off"} <i>›</i></strong></button></div><button className="danger-button" disabled={selected.contactRemovalLocked} onClick={() => { if (selected.contactRemovalLocked) return; setDetailsOpen(false); setRemoveTarget(selected); }}><span>{selected.contactRemovalLocked ? "◇" : "−"}</span><div><strong>{selected.contactRemovalLocked ? "Contact protected" : "Remove from circle"}</strong><small>{selected.contactRemovalLocked ? "Parental control prevents either person from deleting this contact" : "Ends chat access and location sharing"}</small></div><b>{selected.contactRemovalLocked ? "Locked" : "›"}</b></button></section></div>}
       {removeTarget && <div className="modal-backdrop"><section className="glass-modal safety-modal remove-modal" role="alertdialog" aria-modal="true" aria-labelledby="remove-contact-title"><div className="safety-icon remove-icon">−</div><span className="kicker">Remove contact</span><h2 id="remove-contact-title">Remove {removeTarget.name}?</h2><p>They’ll be removed from both circles, location sharing will stop, and this conversation will no longer appear.</p><div className="remove-actions"><button className="secondary-button" onClick={() => setRemoveTarget(null)}>Keep contact</button><button className="danger-confirm" onClick={() => { void removeContact(removeTarget); }}>Remove {removeTarget.name}</button></div></section></div>}
       {parentPrompt && <div className="modal-backdrop"><section className="glass-modal safety-modal"><div className="safety-icon">⌖<i /></div><span className="kicker">Family location</span><h2>Share with {parentPrompt.name}</h2><p>Would you also like to give {parentPrompt.name} parental control? With it on, your location can only be paused after they approve.</p><div className="setting-preview"><div><span>Parental control</span><small>Requires two-person approval to turn off</small></div><span className="mini-switch on"><i /></span></div><button className="primary-button" onClick={() => { updatePerson(parentPrompt.id, { locationShared: true, parentalControl: true }); setParentPrompt(null); setToast(`${parentPrompt.name} now has parental location control.`); }}>Share with parental control</button><button className="secondary-button full" onClick={() => { updatePerson(parentPrompt.id, { locationShared: true }); setParentPrompt(null); setToast(`Location shared with ${parentPrompt.name}.`); }}>Share location only</button><button className="text-button" onClick={() => setParentPrompt(null)}>Cancel</button></section></div>}
       {lockRequest && <div className="modal-backdrop"><section className="glass-modal safety-modal"><div className="safety-icon lock-icon">◇</div><span className="kicker">Two-person safety</span><h2>Ask {lockRequest.name} to pause?</h2><p>Parental control is active. {lockRequest.name} needs to approve before your location sharing can turn off.</p><div className="approval-flow"><span className="avatar you-avatar">{userInitials}</span><i /><span className={`avatar ${lockRequest.tone}`}>{initials(lockRequest.name)}</span></div><button className="primary-button" onClick={() => { setLockRequest(null); setToast(`Pause request sent to ${lockRequest.name}. Location stays on for now.`); }}>Send approval request <span>→</span></button><button className="text-button" onClick={() => setLockRequest(null)}>Keep sharing</button></section></div>}
@@ -564,6 +633,7 @@ export default function Home() {
   const [locationPermission, setLocationPermission] = useState<LocationPermission>("checking");
   const [locationPromptOpen, setLocationPromptOpen] = useState(true);
   const [requestingLocation, setRequestingLocation] = useState(false);
+  const locationSharingActive = account?.contacts.some((contact) => contact.locationShared) ?? false;
 
   const requestLocation = useCallback(() => new Promise<boolean>((resolve) => {
     if (!("geolocation" in navigator)) {
@@ -574,11 +644,20 @@ export default function Home() {
     }
 
     setRequestingLocation(true);
-    setLocationPromptOpen(true);
     navigator.geolocation.getCurrentPosition(
-      () => {
+      async (position) => {
         setLocationPermission("granted");
         setLocationPromptOpen(false);
+        try {
+          const context = await collectLiveContext(position);
+          const next = await accountRequest("/api/actions", {
+            method: "POST",
+            body: JSON.stringify({ action: "update-live-context", ...context }),
+          });
+          if (next) setAccount(next);
+        } catch {
+          // Location sharing still succeeds when optional context services are unavailable.
+        }
         setRequestingLocation(false);
         resolve(true);
       },
@@ -625,7 +704,7 @@ export default function Home() {
       }
 
       setLocationPermission("prompt");
-      void requestLocation();
+      setLocationPromptOpen(true);
     };
 
     void checkPermission();
@@ -667,6 +746,14 @@ export default function Home() {
       window.removeEventListener("focus", sync);
     };
   }, [refreshAccount, screen]);
+
+  useEffect(() => {
+    if (screen !== "app" || !locationSharingActive) return;
+    const update = () => { void requestLocation(); };
+    update();
+    const timer = window.setInterval(update, 5 * 60 * 1000);
+    return () => window.clearInterval(timer);
+  }, [locationSharingActive, requestLocation, screen]);
 
   const performAction = async (payload: Record<string, unknown>) => {
     try {

@@ -44,3 +44,25 @@ test("keeps the mobile message composer stable when the keyboard opens", async (
   assert.match(css, /\.composer \{[^}]*max-width:\s*calc\(100vw - 18px\)/);
   assert.match(css, /\.composer input \{[^}]*min-width:\s*0/);
 });
+
+test("persists live context only for contacts it is shared with", async () => {
+  const [database, state, actions] = await Promise.all([
+    readFile(new URL("db/index.ts", root), "utf8"),
+    readFile(new URL("lib/state.ts", root), "utf8"),
+    readFile(new URL("app/api/actions/route.ts", root), "utf8"),
+  ]);
+  assert.match(database, /CREATE TABLE IF NOT EXISTS live_contexts/);
+  assert.match(state, /shared\.owner_id = c\.contact_id/);
+  assert.match(state, /shared\.location_shared = 1/);
+  assert.match(actions, /action === "update-live-context"/);
+});
+
+test("blocks contact deletion while parental control is active", async () => {
+  const [page, actions] = await Promise.all([
+    readFile(new URL("app/page.tsx", root), "utf8"),
+    readFile(new URL("app/api/actions/route.ts", root), "utf8"),
+  ]);
+  assert.match(page, /disabled=\{selected\.contactRemovalLocked\}/);
+  assert.match(actions, /parental_control = 1/);
+  assert.match(actions, /protected by parental control and cannot be deleted/);
+});

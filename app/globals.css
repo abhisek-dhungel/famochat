@@ -315,6 +315,9 @@ button:disabled { cursor: not-allowed; opacity: .45; }
 .contact-settings strong { font-size: 9px; }
 .contact-settings strong i { margin-left: 5px; color: var(--muted); font-size: 15px; font-style: normal; font-weight: 400; }
 .danger-button { width: 100%; min-height: 56px; display: grid; grid-template-columns: auto 1fr auto; align-items: center; gap: 10px; margin-top: 12px; padding: 8px 11px; border: 1px solid rgba(0,0,0,.1); border-radius: 17px; background: rgba(255,255,255,.48); text-align: left; cursor: pointer; }
+.danger-button:disabled { cursor: not-allowed; opacity: 1; background: rgba(0,0,0,.045); }
+.danger-button:disabled > span { background: #777; }
+.danger-button:disabled > b { font-size: 8px; font-weight: 750; text-transform: uppercase; letter-spacing: .06em; }
 .danger-button > span { width: 32px; height: 32px; display: grid; place-items: center; border-radius: 11px; background: #111; color: white; font-size: 18px; }
 .danger-button div { display: grid; gap: 3px; }
 .danger-button strong { font-size: 10px; }

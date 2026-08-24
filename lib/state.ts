@@ -14,14 +14,33 @@ function displayTime(value: number, mine: boolean) {
   return `${sameDay ? time : date.toLocaleDateString([], { month: "short", day: "numeric" })}${mine ? " · Sent" : ""}`;
 }
 
+function contextAge(value: number | null) {
+  if (!value) return "Waiting for the first location update";
+  const minutes = Math.max(0, Math.floor((Date.now() - value) / 60000));
+  if (minutes < 1) return "Updated just now";
+  if (minutes === 1) return "Updated 1 minute ago";
+  if (minutes < 60) return `Updated ${minutes} minutes ago`;
+  const hours = Math.floor(minutes / 60);
+  return `Updated ${hours} ${hours === 1 ? "hour" : "hours"} ago`;
+}
+
 export async function getAccountState(user: SessionUser) {
   const database = await ensureSchema();
   const [contactsResult, requestsResult, messagesResult] = await Promise.all([
     database.execute({
       sql: `SELECT u.username, u.name, c.relation, c.category, c.approved,
-          c.location_shared, c.parental_control
+          c.location_shared, c.parental_control,
+          shared.location_shared AS live_context_shared,
+          shared.parental_control AS reverse_parental_control,
+          context.latitude, context.longitude, context.location_label,
+          context.temperature, context.weather, context.battery,
+          context.charging, context.updated_at
         FROM contacts c
         JOIN users u ON u.id = c.contact_id
+        LEFT JOIN contacts shared ON shared.owner_id = c.contact_id
+          AND shared.contact_id = c.owner_id AND shared.approved = 1
+        LEFT JOIN live_contexts context ON context.user_id = c.contact_id
+          AND shared.location_shared = 1
         WHERE c.owner_id = ?
         ORDER BY c.approved DESC, u.name COLLATE NOCASE`,
       args: [user.id],
@@ -52,6 +71,10 @@ export async function getAccountState(user: SessionUser) {
   const contacts = contactsResult.rows.map((row) => {
     const approved = Number(row.approved) === 1;
     const username = String(row.username);
+    const liveContextShared = Number(row.live_context_shared) === 1;
+    const latitude = row.latitude == null ? null : Number(row.latitude);
+    const longitude = row.longitude == null ? null : Number(row.longitude);
+    const locationFallback = latitude == null || longitude == null ? "Waiting for location" : `${latitude.toFixed(4)}°, ${longitude.toFixed(4)}°`;
     return {
       id: username,
       name: String(row.name),
@@ -61,14 +84,17 @@ export async function getAccountState(user: SessionUser) {
       online: approved,
       approved,
       locationShared: Number(row.location_shared) === 1,
+      liveContextShared,
       parentalControl: Number(row.parental_control) === 1,
+      contactRemovalLocked: Number(row.parental_control) === 1 || Number(row.reverse_parental_control) === 1,
       activity: approved ? "Online" : "Pending",
-      speed: "—",
-      location: "Location private",
-      eta: "—",
-      temperature: "—",
-      weather: "—",
-      battery: 0,
+      speed: liveContextShared ? "Live" : "—",
+      location: row.location_label ? String(row.location_label) : locationFallback,
+      eta: contextAge(row.updated_at == null ? null : Number(row.updated_at)),
+      temperature: row.temperature == null ? "—" : `${Math.round(Number(row.temperature))}°`,
+      weather: row.weather ? String(row.weather) : "Unavailable",
+      battery: row.battery == null ? null : Number(row.battery),
+      charging: row.charging == null ? null : Number(row.charging) === 1,
       tone: toneFor(username),
     };
   });

@@ -1,4 +1,4 @@
-import { index, integer, primaryKey, sqliteTable, text, uniqueIndex } from "drizzle-orm/sqlite-core";
+import { index, integer, primaryKey, real, sqliteTable, text, uniqueIndex } from "drizzle-orm/sqlite-core";
 
 export const users = sqliteTable("users", {
   id: text("id").primaryKey(),
@@ -20,6 +20,18 @@ export const sessions = sqliteTable("sessions", {
   expiresAt: integer("expires_at").notNull(),
   createdAt: integer("created_at").notNull(),
 }, (table) => [index("idx_sessions_user_expiry").on(table.userId, table.expiresAt)]);
+
+export const liveContexts = sqliteTable("live_contexts", {
+  userId: text("user_id").primaryKey().references(() => users.id, { onDelete: "cascade" }),
+  latitude: real("latitude").notNull(),
+  longitude: real("longitude").notNull(),
+  locationLabel: text("location_label").notNull(),
+  temperature: real("temperature"),
+  weather: text("weather").notNull().default("Unavailable"),
+  battery: integer("battery"),
+  charging: integer("charging", { mode: "boolean" }),
+  updatedAt: integer("updated_at").notNull(),
+}, (table) => [index("idx_live_contexts_updated").on(table.updatedAt)]);
 
 export const relationshipRequests = sqliteTable("relationship_requests", {
   id: text("id").primaryKey(),

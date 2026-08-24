@@ -35,6 +35,17 @@ export async function ensureSchema(): Promise<Client> {
           expires_at INTEGER NOT NULL,
           created_at INTEGER NOT NULL
         )`,
+        `CREATE TABLE IF NOT EXISTS live_contexts (
+          user_id TEXT PRIMARY KEY NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+          latitude REAL NOT NULL,
+          longitude REAL NOT NULL,
+          location_label TEXT NOT NULL,
+          temperature REAL,
+          weather TEXT NOT NULL DEFAULT 'Unavailable',
+          battery INTEGER,
+          charging INTEGER,
+          updated_at INTEGER NOT NULL
+        )`,
         `CREATE TABLE IF NOT EXISTS relationship_requests (
           id TEXT PRIMARY KEY NOT NULL,
           from_user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -69,6 +80,7 @@ export async function ensureSchema(): Promise<Client> {
           created_at INTEGER NOT NULL
         )`,
         "CREATE INDEX IF NOT EXISTS idx_sessions_user_expiry ON sessions(user_id, expires_at)",
+        "CREATE INDEX IF NOT EXISTS idx_live_contexts_updated ON live_contexts(updated_at)",
         "CREATE INDEX IF NOT EXISTS idx_requests_recipient_created ON relationship_requests(to_user_id, created_at)",
         "CREATE INDEX IF NOT EXISTS idx_contacts_owner ON contacts(owner_id)",
         "CREATE INDEX IF NOT EXISTS idx_messages_sender_recipient_created ON messages(sender_id, recipient_id, created_at)",

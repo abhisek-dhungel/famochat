@@ -65,6 +65,8 @@ Vercel should use the same Turso database for deployments that need to share acc
 - Every relationship, contact, and message mutation checks the signed-in user on the server.
 - Cloudinary upload signatures are only issued to signed-in users and expire according to Cloudinary's signed-upload rules.
 - Messages are protected in transit but are not yet end-to-end encrypted at the application layer.
+- Shared live context uses browser geolocation, Open-Meteo current weather, and BigDataCloud reverse geocoding. Battery percentage appears only in browsers that expose the Battery Status API; unsupported browsers show it as unavailable.
+- A relationship cannot be deleted by either person while parental control is active in either direction.
 
 ## Commands
 

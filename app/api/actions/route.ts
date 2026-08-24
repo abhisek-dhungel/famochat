@@ -115,6 +115,17 @@ export async function POST(request: Request) {
       const target = targetResult.rows[0];
       if (!target) throw new HttpError(404, "That contact no longer exists.");
       const targetId = String(target.id);
+      const protection = await database.execute({
+        sql: `SELECT 1 FROM contacts
+          WHERE parental_control = 1 AND (
+            (owner_id = ? AND contact_id = ?) OR
+            (owner_id = ? AND contact_id = ?)
+          ) LIMIT 1`,
+        args: [user.id, targetId, targetId, user.id],
+      });
+      if (protection.rows[0]) {
+        throw new HttpError(409, "This contact is protected by parental control and cannot be deleted.");
+      }
       await database.batch([
         { sql: "DELETE FROM contacts WHERE (owner_id = ? AND contact_id = ?) OR (owner_id = ? AND contact_id = ?)", args: [user.id, targetId, targetId, user.id] },
         { sql: "DELETE FROM relationship_requests WHERE (from_user_id = ? AND to_user_id = ?) OR (from_user_id = ? AND to_user_id = ?)", args: [user.id, targetId, targetId, user.id] },
@@ -140,6 +151,35 @@ export async function POST(request: Request) {
         args: [locationShared, parentalControl, user.id, username],
       });
       if (result.rowsAffected !== 1) throw new HttpError(409, "The location preference could not be updated.");
+    } else if (action === "update-live-context") {
+      const latitude = typeof body.latitude === "number" ? body.latitude : Number.NaN;
+      const longitude = typeof body.longitude === "number" ? body.longitude : Number.NaN;
+      const temperature = typeof body.temperature === "number" && Number.isFinite(body.temperature) ? body.temperature : null;
+      const battery = typeof body.battery === "number" && Number.isFinite(body.battery) ? Math.round(body.battery) : null;
+      const charging = typeof body.charging === "boolean" ? (body.charging ? 1 : 0) : null;
+      const locationLabel = value(body, "locationLabel", 220);
+      const weather = value(body, "weather", 80) || "Unavailable";
+      if (!Number.isFinite(latitude) || latitude < -90 || latitude > 90) throw new HttpError(400, "Latitude is invalid.");
+      if (!Number.isFinite(longitude) || longitude < -180 || longitude > 180) throw new HttpError(400, "Longitude is invalid.");
+      if (!locationLabel) throw new HttpError(400, "Location name is required.");
+      if (temperature != null && (temperature < -100 || temperature > 100)) throw new HttpError(400, "Temperature is invalid.");
+      if (battery != null && (battery < 0 || battery > 100)) throw new HttpError(400, "Battery level is invalid.");
+
+      await database.execute({
+        sql: `INSERT INTO live_contexts
+          (user_id, latitude, longitude, location_label, temperature, weather, battery, charging, updated_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+          ON CONFLICT(user_id) DO UPDATE SET
+            latitude = excluded.latitude,
+            longitude = excluded.longitude,
+            location_label = excluded.location_label,
+            temperature = excluded.temperature,
+            weather = excluded.weather,
+            battery = excluded.battery,
+            charging = excluded.charging,
+            updated_at = excluded.updated_at`,
+        args: [user.id, latitude, longitude, locationLabel, temperature, weather, battery, charging, now],
+      });
     } else if (action === "send-message") {
       const username = value(body, "username", 80).toLowerCase();
       const kind = value(body, "kind", 20);
