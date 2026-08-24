@@ -220,7 +220,7 @@ function MediaMessage({ message, onPreview }: { message: Message; onPreview?: (m
 }
 
 function Brand() {
-  return <div className="brand" aria-label="famochat"><strong className="brand-famo">famo</strong><span className="brand-chat">chat</span></div>;
+  return <div className="brand" aria-label="Famochat"><strong aria-hidden="true">f</strong></div>;
 }
 
 function WindowDots({ onMinimize }: { onMinimize?: () => void }) {

@@ -51,6 +51,21 @@ test("keeps desktop chat history in its own scrollable area", async () => {
   assert.match(css, /\.messages \{[^}]*flex:\s*1 1 0;[^}]*overflow-y:\s*auto/);
 });
 
+test("uses the grey f mark and a concise bookmark title", async () => {
+  const [layout, page, css, favicon] = await Promise.all([
+    readFile(new URL("app/layout.tsx", root), "utf8"),
+    readFile(new URL("app/page.tsx", root), "utf8"),
+    readFile(new URL("app/globals.css", root), "utf8"),
+    readFile(new URL("public/favicon.svg", root), "utf8"),
+  ]);
+  assert.match(layout, /const title = "Famochat"/);
+  assert.doesNotMatch(layout, /Keep your people close/);
+  assert.match(page, /className="brand"[^>]*><strong[^>]*>f<\/strong>/);
+  assert.match(css, /\.brand \{[^}]*background:\s*#8d8d8b/);
+  assert.match(favicon, /fill="#8D8D8B"/);
+  assert.match(favicon, />f<\/text>/);
+});
+
 test("persists live context only for contacts it is shared with", async () => {
   const [database, state, actions] = await Promise.all([
     readFile(new URL("db/index.ts", root), "utf8"),
