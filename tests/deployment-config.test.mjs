@@ -1,0 +1,39 @@
+import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
+import test from "node:test";
+
+const root = new URL("../", import.meta.url);
+
+test("uses the Vercel-native Next.js build", async () => {
+  const packageJson = JSON.parse(await readFile(new URL("package.json", root), "utf8"));
+  assert.equal(packageJson.scripts.build, "next build");
+  assert.ok(packageJson.dependencies.next);
+  assert.ok(packageJson.dependencies["@libsql/client"]);
+  assert.equal(packageJson.devDependencies?.vinext, undefined);
+  assert.equal(packageJson.devDependencies?.wrangler, undefined);
+});
+
+test("documents every production service secret without committing values", async () => {
+  const envExample = await readFile(new URL(".env.example", root), "utf8");
+  for (const key of [
+    "TURSO_DATABASE_URL",
+    "TURSO_AUTH_TOKEN",
+    "CLOUDINARY_CLOUD_NAME",
+    "CLOUDINARY_API_KEY",
+    "CLOUDINARY_API_SECRET",
+  ]) {
+    assert.match(envExample, new RegExp(`^${key}=`, "m"));
+    if (process.env[key]) assert.equal(envExample.includes(process.env[key]), false);
+  }
+});
+
+test("keeps passwords and Cloudinary signing secrets on the server", async () => {
+  const [page, authRoute, signatureRoute] = await Promise.all([
+    readFile(new URL("app/page.tsx", root), "utf8"),
+    readFile(new URL("app/api/auth/route.ts", root), "utf8"),
+    readFile(new URL("app/api/media/signature/route.ts", root), "utf8"),
+  ]);
+  assert.doesNotMatch(page, /localStorage|indexedDB|CLOUDINARY_API_SECRET|passwordHash|passwordSalt/);
+  assert.match(authRoute, /createPassword|startSession/);
+  assert.match(signatureRoute, /CLOUDINARY_API_SECRET/);
+});
