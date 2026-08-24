@@ -39,10 +39,15 @@ test("keeps passwords and Cloudinary signing secrets on the server", async () =>
 });
 
 test("keeps the mobile message composer stable when the keyboard opens", async () => {
-  const css = await readFile(new URL("app/globals.css", root), "utf8");
+  const [css, page] = await Promise.all([
+    readFile(new URL("app/globals.css", root), "utf8"),
+    readFile(new URL("app/page.tsx", root), "utf8"),
+  ]);
   assert.match(css, /@media \(max-width: 760px\)[\s\S]*\.composer input \{[^}]*font-size:\s*16px/);
   assert.match(css, /\.composer \{[^}]*max-width:\s*calc\(100vw - 18px\)/);
   assert.match(css, /\.composer input \{[^}]*min-width:\s*0/);
+  assert.match(page, /enterKeyHint="send"/);
+  assert.match(page, /event\.key === "Enter"[^}]*requestSubmit\(\)/);
 });
 
 test("keeps desktop chat history in its own scrollable area", async () => {
