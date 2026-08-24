@@ -37,3 +37,10 @@ test("keeps passwords and Cloudinary signing secrets on the server", async () =>
   assert.match(authRoute, /createPassword|startSession/);
   assert.match(signatureRoute, /CLOUDINARY_API_SECRET/);
 });
+
+test("keeps the mobile message composer stable when the keyboard opens", async () => {
+  const css = await readFile(new URL("app/globals.css", root), "utf8");
+  assert.match(css, /@media \(max-width: 760px\)[\s\S]*\.composer input \{[^}]*font-size:\s*16px/);
+  assert.match(css, /\.composer \{[^}]*max-width:\s*calc\(100vw - 18px\)/);
+  assert.match(css, /\.composer input \{[^}]*min-width:\s*0/);
+});
