@@ -15,6 +15,13 @@
       "when": 1787598461520,
       "tag": "0001_magical_jubilee",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "6",
+      "when": 1787645063327,
+      "tag": "0002_flaky_red_hulk",
+      "breakpoints": true
     }
   ]
 }

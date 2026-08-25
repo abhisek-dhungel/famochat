@@ -3,6 +3,37 @@ import { createClient, type Client } from "@libsql/client";
 let client: Client | null = null;
 let schemaPromise: Promise<void> | null = null;
 
+const messageColumnDefinitions = [
+  ["kind", "kind TEXT NOT NULL DEFAULT 'text'"],
+  ["media_url", "media_url TEXT"],
+  ["media_public_id", "media_public_id TEXT"],
+  ["media_resource_type", "media_resource_type TEXT"],
+  ["media_format", "media_format TEXT"],
+  ["media_bytes", "media_bytes INTEGER"],
+  ["mime_type", "mime_type TEXT"],
+  ["file_name", "file_name TEXT"],
+  ["duration", "duration INTEGER"],
+] as const;
+
+async function messageColumnNames(database: Client) {
+  const result = await database.execute("PRAGMA table_info(messages)");
+  return new Set(result.rows.map((row) => String(row.name)));
+}
+
+async function ensureMessageColumns(database: Client) {
+  let columns = await messageColumnNames(database);
+  for (const [name, definition] of messageColumnDefinitions) {
+    if (columns.has(name)) continue;
+    try {
+      await database.execute(`ALTER TABLE messages ADD COLUMN ${definition}`);
+    } catch (error) {
+      columns = await messageColumnNames(database);
+      if (!columns.has(name)) throw error;
+    }
+    columns.add(name);
+  }
+}
+
 export function getDb(): Client {
   const url = process.env.TURSO_DATABASE_URL;
   if (!url) throw new Error("TURSO_DATABASE_URL is not configured.");
@@ -74,6 +105,9 @@ export async function ensureSchema(): Promise<Client> {
           kind TEXT NOT NULL DEFAULT 'text',
           media_url TEXT,
           media_public_id TEXT,
+          media_resource_type TEXT,
+          media_format TEXT,
+          media_bytes INTEGER,
           mime_type TEXT,
           file_name TEXT,
           duration INTEGER,
@@ -88,6 +122,7 @@ export async function ensureSchema(): Promise<Client> {
       ],
       "write",
     )
+    .then(() => ensureMessageColumns(database))
     .then(() => undefined)
     .catch((error) => {
       schemaPromise = null;

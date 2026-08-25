@@ -1,5 +1,6 @@
 import { ensureSchema } from "@/db";
 import type { SessionUser } from "@/lib/auth";
+import { serializeMessageRows } from "@/lib/messages";
 
 function toneFor(value: string) {
   const tones = ["tone-dark", "tone-mid", "tone-light", "tone-soft", "tone-silver"];
@@ -48,9 +49,10 @@ export async function getAccountState(user: SessionUser) {
       args: [user.id],
     }),
     database.execute({
-      sql: `SELECT m.id, m.sender_id, sender.username AS sender_username,
+      sql: `SELECT m.id, m.sender_id, m.recipient_id, sender.username AS sender_username,
           recipient.username AS recipient_username, m.text, m.kind, m.media_url,
-          m.media_public_id, m.mime_type, m.file_name, m.duration, m.created_at
+          m.media_public_id, m.media_resource_type, m.media_format, m.media_bytes,
+          m.mime_type, m.file_name, m.duration, m.created_at
         FROM messages m
         JOIN users sender ON sender.id = m.sender_id
         JOIN users recipient ON recipient.id = m.recipient_id
@@ -93,22 +95,9 @@ export async function getAccountState(user: SessionUser) {
   });
 
   const messages: Record<string, unknown[]> = {};
-  for (const row of [...messagesResult.rows].reverse()) {
-    const mine = String(row.sender_id) === user.id;
-    const partner = mine ? String(row.recipient_username) : String(row.sender_username);
+  for (const { partner, message } of serializeMessageRows(messagesResult.rows, user.id)) {
     messages[partner] ??= [];
-    messages[partner].push({
-      id: Number(row.id),
-      text: String(row.text ?? ""),
-      from: mine ? "me" : "them",
-      createdAt: Number(row.created_at),
-      kind: String(row.kind),
-      mediaUrl: row.media_url ? String(row.media_url) : undefined,
-      mediaPublicId: row.media_public_id ? String(row.media_public_id) : undefined,
-      mimeType: row.mime_type ? String(row.mime_type) : undefined,
-      fileName: row.file_name ? String(row.file_name) : undefined,
-      duration: row.duration == null ? undefined : Number(row.duration),
-    });
+    messages[partner].push(message);
   }
 
   return {

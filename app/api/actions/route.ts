@@ -1,5 +1,7 @@
 import { ensureSchema } from "@/db";
 import { assertSameOrigin, errorResponse, HttpError, requireSessionUser } from "@/lib/auth";
+import { verifyCloudinaryUploadSignature } from "@/lib/cloudinary";
+import { cloudinaryResourceType, isCloudinaryDeliveryUrl, type CloudinaryResourceType, type MediaMessageKind } from "@/lib/media";
 import { getAccountState } from "@/lib/state";
 
 export const runtime = "nodejs";
@@ -18,6 +20,12 @@ function value(body: ActionBody, key: string, max = 500) {
 function booleanValue(body: ActionBody, key: string) {
   if (typeof body[key] !== "boolean") throw new HttpError(400, `${key} must be true or false.`);
   return body[key] ? 1 : 0;
+}
+
+function integerValue(body: ActionBody, key: string) {
+  const result = typeof body[key] === "number" ? Math.round(body[key]) : 0;
+  if (!Number.isSafeInteger(result) || result <= 0) throw new HttpError(400, `${key} is invalid.`);
+  return result;
 }
 
 export async function POST(request: Request) {
@@ -196,16 +204,39 @@ export async function POST(request: Request) {
 
       const mediaUrl = value(body, "mediaUrl", 1000) || null;
       const mediaPublicId = value(body, "mediaPublicId", 500) || null;
+      const mediaResourceType = value(body, "mediaResourceType", 20) as CloudinaryResourceType;
+      const mediaFormat = value(body, "mediaFormat", 40).toLowerCase();
+      const mimeType = value(body, "mimeType", 200) || null;
+      const fileName = value(body, "fileName", 300) || null;
+      let mediaBytes: number | null = null;
       if (kind !== "text") {
         const cloudName = process.env.CLOUDINARY_CLOUD_NAME;
-        if (!mediaUrl || !mediaPublicId || !cloudName || !mediaUrl.startsWith(`https://res.cloudinary.com/${cloudName}/`)) {
+        const apiSecret = process.env.CLOUDINARY_API_SECRET;
+        const uploadVersion = integerValue(body, "uploadVersion");
+        const uploadSignature = value(body, "uploadSignature", 128);
+        mediaBytes = integerValue(body, "mediaBytes");
+        const expectedResourceType = cloudinaryResourceType(kind as MediaMessageKind);
+        const byteLimit = kind === "image" ? 25 * 1024 * 1024 : kind === "video" ? 100 * 1024 * 1024 : kind === "document" ? 50 * 1024 * 1024 : 25 * 1024 * 1024;
+        const mimeMatches = !mimeType
+          || (kind === "image" && mimeType.startsWith("image/"))
+          || (kind === "video" && mimeType.startsWith("video/"))
+          || (kind === "audio" && mimeType.startsWith("audio/"))
+          || kind === "document";
+        if (!mediaUrl || !mediaPublicId || !mediaFormat || !cloudName || !apiSecret || mediaResourceType !== expectedResourceType || mediaBytes > byteLimit || !mimeMatches) {
           throw new HttpError(400, "Upload the attachment before sending it.");
+        }
+        if (!verifyCloudinaryUploadSignature({ publicId: mediaPublicId, version: uploadVersion, signature: uploadSignature, apiSecret })) {
+          throw new HttpError(400, "Cloudinary could not verify this upload.");
+        }
+        if (!isCloudinaryDeliveryUrl({ url: mediaUrl, cloudName, resourceType: expectedResourceType, publicId: mediaPublicId, version: uploadVersion, format: mediaFormat })) {
+          throw new HttpError(400, "The uploaded file URL is invalid.");
         }
       }
       await database.execute({
         sql: `INSERT INTO messages
-          (sender_id, recipient_id, text, kind, media_url, media_public_id, mime_type, file_name, duration, created_at)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          (sender_id, recipient_id, text, kind, media_url, media_public_id, media_resource_type,
+            media_format, media_bytes, mime_type, file_name, duration, created_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         args: [
           user.id,
           String(target.id),
@@ -213,8 +244,11 @@ export async function POST(request: Request) {
           kind,
           mediaUrl,
           mediaPublicId,
-          value(body, "mimeType", 200) || null,
-          value(body, "fileName", 300) || null,
+          mediaResourceType || null,
+          mediaFormat || null,
+          mediaBytes,
+          mimeType,
+          fileName,
           typeof body.duration === "number" ? Math.max(0, Math.round(body.duration)) : null,
           now,
         ],

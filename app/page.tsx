@@ -1,33 +1,29 @@
 "use client";
 
-/* eslint-disable @next/next/no-img-element, jsx-a11y/media-has-caption, jsx-a11y/no-autofocus, jsx-a11y/no-noninteractive-element-interactions, jsx-a11y/no-static-element-interactions, react-hooks/purity */
+/* eslint-disable jsx-a11y/no-autofocus, jsx-a11y/no-noninteractive-element-interactions, jsx-a11y/no-static-element-interactions, react-hooks/purity */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { ChangeEvent, FormEvent, MouseEvent as ReactMouseEvent } from "react";
+import type { ChangeEvent, FormEvent } from "react";
+import { MediaMessage, type ChatMessage } from "@/components/media-message";
+import { parseCloudinaryUploadResponse, type CloudinaryResourceType, type MediaMessageKind } from "@/lib/media";
 
 type Screen = "welcome" | "signup" | "signin" | "app";
 type CircleType = "Family" | "Relative" | "Close friend";
 type LocationPermission = "checking" | "prompt" | "granted" | "denied" | "unavailable";
-type MessageKind = "text" | "image" | "video" | "audio" | "document";
+type MessageKind = MediaMessageKind;
 
-type Message = {
-  id: number;
-  text: string;
-  from: "me" | "them";
-  createdAt: number;
-  kind?: MessageKind;
-  mediaUrl?: string;
-  mediaPublicId?: string;
-  mimeType?: string;
-  fileName?: string;
-  duration?: number;
-};
+type Message = ChatMessage;
 
 type OutgoingMessage = {
   text: string;
   kind: MessageKind;
   mediaUrl?: string;
   mediaPublicId?: string;
+  mediaResourceType?: CloudinaryResourceType;
+  mediaFormat?: string;
+  mediaBytes?: number;
+  uploadVersion?: number;
+  uploadSignature?: string;
   mimeType?: string;
   fileName?: string;
   duration?: number;
@@ -179,11 +175,6 @@ function formatMessageTime(value: number, mine: boolean) {
   return `${label}${mine ? " · Sent" : ""}`;
 }
 
-function formatAudioTime(value: number) {
-  const seconds = Math.max(0, Math.floor(value));
-  return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`;
-}
-
 type AccountResponse = { account?: Account; error?: string };
 
 async function accountRequest(url: string, init?: RequestInit) {
@@ -193,84 +184,38 @@ async function accountRequest(url: string, init?: RequestInit) {
   return data.account ?? null;
 }
 
-async function uploadToCloudinary(file: Blob) {
-  const signatureResponse = await fetch("/api/media/signature", { method: "POST" });
+async function uploadToCloudinary(file: Blob, kind: Exclude<MessageKind, "text">, fileName: string) {
+  const signatureResponse = await fetch("/api/media/signature", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ kind }),
+  });
   const signatureData = await signatureResponse.json() as {
     cloudName?: string;
     apiKey?: string;
     timestamp?: number;
     folder?: string;
+    resourceType?: CloudinaryResourceType;
+    uploadUrl?: string;
     signature?: string;
     error?: string;
   };
-  if (!signatureResponse.ok || !signatureData.cloudName || !signatureData.apiKey || !signatureData.timestamp || !signatureData.folder || !signatureData.signature) {
+  if (!signatureResponse.ok || !signatureData.cloudName || !signatureData.apiKey || !signatureData.timestamp || !signatureData.folder || !signatureData.resourceType || !signatureData.uploadUrl || !signatureData.signature) {
     throw new Error(signatureData.error || "Media uploads are not configured.");
   }
 
   const form = new FormData();
-  form.set("file", file);
+  form.set("file", file, fileName);
   form.set("api_key", signatureData.apiKey);
   form.set("timestamp", String(signatureData.timestamp));
   form.set("folder", signatureData.folder);
   form.set("signature", signatureData.signature);
-  const uploadResponse = await fetch(`https://api.cloudinary.com/v1_1/${signatureData.cloudName}/auto/upload`, { method: "POST", body: form });
-  const uploaded = await uploadResponse.json() as { secure_url?: string; public_id?: string; error?: { message?: string } };
-  if (!uploadResponse.ok || !uploaded.secure_url || !uploaded.public_id) {
-    throw new Error(uploaded.error?.message || "The attachment could not be uploaded.");
+  const uploadResponse = await fetch(signatureData.uploadUrl, { method: "POST", body: form });
+  const uploaded = await uploadResponse.json().catch(() => null) as { error?: { message?: string } } | null;
+  if (!uploadResponse.ok || !uploaded) {
+    throw new Error(uploaded?.error?.message || "The attachment could not be uploaded.");
   }
-  return { mediaUrl: uploaded.secure_url, mediaPublicId: uploaded.public_id };
-}
-
-const waveformBars = [12, 20, 16, 27, 18, 31, 22, 14, 25, 34, 19, 28, 16, 23, 32, 20, 13, 26, 35, 22, 17, 29, 21, 14, 24, 18];
-
-function AudioMessage({ message }: { message: Message }) {
-  const audioRef = useRef<HTMLAudioElement>(null);
-  const [playing, setPlaying] = useState(false);
-  const [elapsed, setElapsed] = useState(0);
-  const [duration, setDuration] = useState(message.duration ?? 0);
-  const progress = duration > 0 ? Math.min(elapsed / duration, 1) : 0;
-
-  const togglePlayback = () => {
-    const audio = audioRef.current;
-    if (!audio) return;
-    if (audio.paused) {
-      void audio.play().catch(() => setPlaying(false));
-    } else {
-      audio.pause();
-    }
-  };
-
-  const seek = (event: ReactMouseEvent<HTMLButtonElement>) => {
-    const audio = audioRef.current;
-    const availableDuration = Number.isFinite(audio?.duration) ? audio?.duration ?? duration : duration;
-    if (!audio || availableDuration <= 0) return;
-    const bounds = event.currentTarget.getBoundingClientRect();
-    const ratio = Math.min(1, Math.max(0, (event.clientX - bounds.left) / bounds.width));
-    audio.currentTime = availableDuration * ratio;
-    setElapsed(audio.currentTime);
-  };
-
-  return <div className="message-audio">
-    <button type="button" className="audio-play" aria-label={playing ? "Pause voice message" : "Play voice message"} onClick={togglePlayback}>{playing ? "Ⅱ" : "▶"}</button>
-    <button type="button" className="audio-waveform" aria-label="Seek voice message" onClick={seek}>{waveformBars.map((height, index) => <i className={(index + 1) / waveformBars.length <= progress ? "played" : ""} style={{ height }} key={`${height}-${index}`} />)}</button>
-    <span className="audio-duration">{formatAudioTime(elapsed > 0 ? elapsed : duration)}</span>
-    <audio ref={audioRef} src={message.mediaUrl} preload="metadata" aria-label="Voice message" onLoadedMetadata={(event) => { if (Number.isFinite(event.currentTarget.duration)) setDuration(event.currentTarget.duration); }} onTimeUpdate={(event) => setElapsed(event.currentTarget.currentTime)} onPlay={() => setPlaying(true)} onPause={() => setPlaying(false)} onEnded={() => { setPlaying(false); setElapsed(0); }} />
-  </div>;
-}
-
-function MediaMessage({ message, onPreview }: { message: Message; onPreview?: (message: Message) => void }) {
-  const source = message.mediaUrl;
-  if (!source) return <span className="media-unavailable">Attachment unavailable</span>;
-  if (message.kind === "image") {
-    const image = <img className="message-image" src={source} alt={message.fileName || "Shared photo"} />;
-    return onPreview ? <button type="button" className="message-image-button" onClick={() => onPreview(message)} aria-label={`Open ${message.fileName || "shared photo"} fullscreen`}>{image}</button> : image;
-  }
-  if (message.kind === "video") return <video className="message-video" src={source} controls playsInline preload="metadata" aria-label={message.fileName || "Shared video"} />;
-  if (message.kind === "document") {
-    const extension = message.fileName?.split(".").pop()?.slice(0, 4).toUpperCase() || "FILE";
-    return <a className="message-document" href={source} download={message.fileName || "Famochat document"}><i>{extension}</i><span><strong>{message.fileName || "Shared document"}</strong><small>Tap to download</small></span><b>↓</b></a>;
-  }
-  return <AudioMessage message={message} />;
+  return parseCloudinaryUploadResponse(uploaded, signatureData.cloudName, signatureData.resourceType);
 }
 
 function Brand() {
@@ -535,7 +480,7 @@ function Messenger({ account, onSignOut, onUpdateContact, onSendRequest, onAppro
     }
     try {
       setToast("Uploading attachment…");
-      const uploaded = await uploadToCloudinary(file);
+      const uploaded = await uploadToCloudinary(file, kind, file.name);
       const error = await onSendMessage(selected.username, { kind, text: "", ...uploaded, mimeType: file.type, fileName: file.name });
       if (error) throw new Error(error);
       setToast(kind === "image" ? "Photo sent." : kind === "video" ? "Video sent." : "Document sent.");
@@ -578,8 +523,10 @@ function Messenger({ account, onSignOut, onUpdateContact, onSendRequest, onAppro
         if (!blob.size) { setToast("No voice audio was captured."); return; }
         try {
           setToast("Uploading voice message…");
-          const uploaded = await uploadToCloudinary(blob);
-          const error = await onSendMessage(recordingTargetRef.current, { kind: "audio", text: "", ...uploaded, mimeType: blob.type, fileName: "Voice message", duration });
+          const extension = blob.type.includes("mp4") ? "m4a" : blob.type.includes("ogg") ? "ogg" : "webm";
+          const fileName = `voice-${Date.now()}.${extension}`;
+          const uploaded = await uploadToCloudinary(blob, "audio", fileName);
+          const error = await onSendMessage(recordingTargetRef.current, { kind: "audio", text: "", ...uploaded, mimeType: blob.type, fileName, duration });
           if (error) throw new Error(error);
           setToast("Voice message sent.");
         } catch (error) {
@@ -793,11 +740,14 @@ export default function Home() {
   useEffect(() => {
     if (screen !== "app") return;
     const sync = () => { void refreshAccount(); };
-    const timer = window.setInterval(sync, 5000);
+    const syncWhenVisible = () => { if (document.visibilityState === "visible") sync(); };
+    const timer = window.setInterval(sync, 2000);
     window.addEventListener("focus", sync);
+    document.addEventListener("visibilitychange", syncWhenVisible);
     return () => {
       window.clearInterval(timer);
       window.removeEventListener("focus", sync);
+      document.removeEventListener("visibilitychange", syncWhenVisible);
     };
   }, [refreshAccount, screen]);
 

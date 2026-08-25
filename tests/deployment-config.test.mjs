@@ -57,27 +57,42 @@ test("keeps desktop chat history in its own scrollable area", async () => {
 });
 
 test("formats message timestamps in the viewer's local timezone", async () => {
-  const [state, page] = await Promise.all([
-    readFile(new URL("lib/state.ts", root), "utf8"),
+  const [messages, page] = await Promise.all([
+    readFile(new URL("lib/messages.ts", root), "utf8"),
     readFile(new URL("app/page.tsx", root), "utf8"),
   ]);
-  assert.match(state, /createdAt:\s*Number\(row\.created_at\)/);
-  assert.doesNotMatch(state, /toLocaleTimeString/);
+  assert.match(messages, /createdAt:\s*Number\(row\.created_at\)/);
+  assert.doesNotMatch(messages, /toLocaleTimeString/);
   assert.match(page, /new Intl\.DateTimeFormat\(undefined, \{ hour: "numeric", minute: "2-digit" \}\)/);
   assert.match(page, /formatMessageTime\(message\.createdAt/);
 });
 
 test("renders compact photo previews and a custom voice-message waveform", async () => {
-  const [page, css] = await Promise.all([
-    readFile(new URL("app/page.tsx", root), "utf8"),
+  const [mediaMessage, css] = await Promise.all([
+    readFile(new URL("components/media-message.tsx", root), "utf8"),
     readFile(new URL("app/globals.css", root), "utf8"),
   ]);
-  assert.match(page, /function AudioMessage/);
-  assert.match(page, /className="audio-waveform"/);
-  assert.doesNotMatch(page, /<audio[^>]*controls/);
+  assert.match(mediaMessage, /function AudioMessage/);
+  assert.match(mediaMessage, /className="audio-waveform"/);
+  assert.doesNotMatch(mediaMessage, /<audio[^>]*controls/);
   assert.match(css, /\.bubble\.media-bubble\.visual-media-bubble \{[^}]*width:\s*min\(300px, 72vw\)/);
   assert.match(css, /\.message-image,[^}]*object-fit:\s*cover/);
   assert.match(css, /\.message-audio audio \{\s*display:\s*none/);
+});
+
+test("verifies and persists complete Cloudinary media metadata", async () => {
+  const [signatureRoute, actions, database, state] = await Promise.all([
+    readFile(new URL("app/api/media/signature/route.ts", root), "utf8"),
+    readFile(new URL("app/api/actions/route.ts", root), "utf8"),
+    readFile(new URL("db/index.ts", root), "utf8"),
+    readFile(new URL("lib/state.ts", root), "utf8"),
+  ]);
+  assert.match(signatureRoute, /cloudinaryResourceType\(kind\)/);
+  assert.match(actions, /verifyCloudinaryUploadSignature/);
+  assert.match(actions, /isCloudinaryDeliveryUrl/);
+  assert.match(database, /ensureMessageColumns/);
+  assert.match(database, /media_resource_type TEXT/);
+  assert.match(state, /serializeMessageRow/);
 });
 
 test("uses the wordmark in-app and the green-dot f favicon", async () => {
