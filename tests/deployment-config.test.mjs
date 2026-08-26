@@ -108,18 +108,32 @@ test("verifies and persists complete Cloudinary media metadata", async () => {
 });
 
 test("uses the wordmark in-app and the green-dot f favicon", async () => {
-  const [layout, page, favicon] = await Promise.all([
+  const [layout, manifest, page, favicon, appleIcon, icon192, icon512] = await Promise.all([
     readFile(new URL("app/layout.tsx", root), "utf8"),
+    readFile(new URL("app/manifest.ts", root), "utf8"),
     readFile(new URL("app/page.tsx", root), "utf8"),
     readFile(new URL("public/favicon.svg", root), "utf8"),
+    readFile(new URL("public/apple-touch-icon.png", root)),
+    readFile(new URL("public/icon-192.png", root)),
+    readFile(new URL("public/icon-512.png", root)),
   ]);
   assert.match(layout, /const title = "Famochat"/);
   assert.doesNotMatch(layout, /Keep your people close/);
+  assert.match(layout, /manifest: "\/manifest\.webmanifest"/);
+  assert.match(layout, /apple-touch-icon\.png/);
+  assert.match(layout, /appleWebApp/);
+  assert.match(manifest, /icon-192\.png/);
+  assert.match(manifest, /icon-512\.png/);
+  assert.match(manifest, /purpose: "any"/);
+  assert.match(manifest, /purpose: "maskable"/);
   assert.match(page, /className="brand-famo">famo<\/strong><span className="brand-chat">chat<\/span>/);
   assert.match(favicon, /fill="#FFFFFF"/);
   assert.match(favicon, /fill="#080808"/);
   assert.match(favicon, /fill="#27A85F"/);
   assert.match(favicon, />f<\/text>/);
+  assert.deepEqual([appleIcon.readUInt32BE(16), appleIcon.readUInt32BE(20)], [180, 180]);
+  assert.deepEqual([icon192.readUInt32BE(16), icon192.readUInt32BE(20)], [192, 192]);
+  assert.deepEqual([icon512.readUInt32BE(16), icon512.readUInt32BE(20)], [512, 512]);
 });
 
 test("persists live context only for contacts it is shared with", async () => {

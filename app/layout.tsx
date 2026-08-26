@@ -13,9 +13,17 @@ export async function generateMetadata(): Promise<Metadata> {
   return {
     title,
     description,
+    applicationName: title,
+    manifest: "/manifest.webmanifest",
     icons: {
-      icon: "/favicon.svg",
+      icon: [{ url: "/favicon.svg", type: "image/svg+xml" }],
       shortcut: "/favicon.svg",
+      apple: [{ url: "/apple-touch-icon.png", sizes: "180x180", type: "image/png" }],
+    },
+    appleWebApp: {
+      capable: true,
+      statusBarStyle: "default",
+      title,
     },
     openGraph: {
       title,
