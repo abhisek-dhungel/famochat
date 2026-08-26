@@ -8,6 +8,7 @@ export const runtime = "nodejs";
 
 const categories = new Set(["Family", "Relative", "Close friend"]);
 const messageKinds = new Set(["text", "image", "video", "audio", "document"]);
+const reactionEmojis = new Set(["❤️", "😂", "😮", "😢", "👍", "🔥"]);
 
 type ActionBody = Record<string, unknown> & { action?: unknown };
 
@@ -28,6 +29,31 @@ function integerValue(body: ActionBody, key: string) {
   return result;
 }
 
+function optionalIntegerValue(body: ActionBody, key: string) {
+  if (body[key] == null) return null;
+  return integerValue(body, key);
+}
+
+type Database = Awaited<ReturnType<typeof ensureSchema>>;
+
+async function approvedContactId(database: Database, ownerId: string, username: string) {
+  const result = await database.execute({
+    sql: `SELECT u.id FROM contacts c JOIN users u ON u.id = c.contact_id
+      WHERE c.owner_id = ? AND u.username = ? AND c.approved = 1 LIMIT 1`,
+    args: [ownerId, username],
+  });
+  return result.rows[0] ? String(result.rows[0].id) : null;
+}
+
+async function conversationMessage(database: Database, messageId: number, userId: string) {
+  const result = await database.execute({
+    sql: `SELECT id, sender_id, recipient_id, kind, created_at, deleted_at
+      FROM messages WHERE id = ? AND (sender_id = ? OR recipient_id = ?) LIMIT 1`,
+    args: [messageId, userId, userId],
+  });
+  return result.rows[0] ?? null;
+}
+
 export async function POST(request: Request) {
   try {
     assertSameOrigin(request);
@@ -36,6 +62,10 @@ export async function POST(request: Request) {
     const body = await request.json() as ActionBody;
     const action = value(body, "action", 40);
     const now = Date.now();
+    await database.execute({
+      sql: "UPDATE users SET last_seen_at = ? WHERE id = ? AND (last_seen_at IS NULL OR last_seen_at < ?)",
+      args: [now, user.id, now - 15_000],
+    });
 
     if (action === "send-request") {
       const username = value(body, "username", 80).replace(/^@/, "").toLowerCase();
@@ -188,19 +218,95 @@ export async function POST(request: Request) {
             updated_at = excluded.updated_at`,
         args: [user.id, latitude, longitude, locationLabel, temperature, weather, battery, charging, now],
       });
+    } else if (action === "mark-read") {
+      const username = value(body, "username", 80).toLowerCase();
+      const targetId = await approvedContactId(database, user.id, username);
+      if (!targetId) throw new HttpError(404, "That approved contact no longer exists.");
+      await database.execute({
+        sql: "UPDATE messages SET read_at = COALESCE(read_at, ?) WHERE sender_id = ? AND recipient_id = ? AND read_at IS NULL",
+        args: [now, targetId, user.id],
+      });
+    } else if (action === "typing") {
+      const username = value(body, "username", 80).toLowerCase();
+      const typing = booleanValue(body, "typing") === 1;
+      const targetId = await approvedContactId(database, user.id, username);
+      if (!targetId) throw new HttpError(404, "That approved contact no longer exists.");
+      if (typing) {
+        await database.execute({
+          sql: `INSERT INTO typing_indicators (user_id, recipient_id, expires_at)
+            VALUES (?, ?, ?) ON CONFLICT(user_id, recipient_id)
+            DO UPDATE SET expires_at = excluded.expires_at`,
+          args: [user.id, targetId, now + 5_000],
+        });
+      } else {
+        await database.execute({
+          sql: "DELETE FROM typing_indicators WHERE user_id = ? AND recipient_id = ?",
+          args: [user.id, targetId],
+        });
+      }
+    } else if (action === "react-message") {
+      const messageId = integerValue(body, "messageId");
+      const emoji = value(body, "emoji", 12);
+      const message = await conversationMessage(database, messageId, user.id);
+      if (!message || message.deleted_at != null) throw new HttpError(404, "That message is no longer available.");
+      if (!emoji) {
+        await database.execute({ sql: "DELETE FROM message_reactions WHERE message_id = ? AND user_id = ?", args: [messageId, user.id] });
+      } else {
+        if (!reactionEmojis.has(emoji)) throw new HttpError(400, "Choose a supported reaction.");
+        await database.execute({
+          sql: `INSERT INTO message_reactions (message_id, user_id, emoji, created_at)
+            VALUES (?, ?, ?, ?) ON CONFLICT(message_id, user_id)
+            DO UPDATE SET emoji = excluded.emoji, created_at = excluded.created_at`,
+          args: [messageId, user.id, emoji, now],
+        });
+      }
+    } else if (action === "edit-message") {
+      const messageId = integerValue(body, "messageId");
+      const text = value(body, "text", 5000);
+      if (!text) throw new HttpError(400, "Write a message first.");
+      const result = await database.execute({
+        sql: `UPDATE messages SET text = ?, edited_at = ?
+          WHERE id = ? AND sender_id = ? AND kind = 'text' AND deleted_at IS NULL
+            AND created_at >= ?`,
+        args: [text, now, messageId, user.id, now - 15 * 60 * 1000],
+      });
+      if (result.rowsAffected !== 1) throw new HttpError(409, "Messages can only be edited for 15 minutes after sending.");
+    } else if (action === "delete-message") {
+      const messageId = integerValue(body, "messageId");
+      const message = await conversationMessage(database, messageId, user.id);
+      if (!message || String(message.sender_id) !== user.id || message.deleted_at != null) {
+        throw new HttpError(404, "That message can no longer be removed.");
+      }
+      const result = await database.batch([
+        { sql: "DELETE FROM message_reactions WHERE message_id = ?", args: [messageId] },
+        {
+          sql: `UPDATE messages SET text = '', media_url = NULL, media_public_id = NULL,
+            media_resource_type = NULL, media_format = NULL, media_bytes = NULL,
+            mime_type = NULL, file_name = NULL, duration = NULL, deleted_at = ?
+            WHERE id = ? AND sender_id = ? AND deleted_at IS NULL`,
+          args: [now, messageId, user.id],
+        },
+      ], "write");
+      if (result[1].rowsAffected !== 1) throw new HttpError(404, "That message can no longer be removed.");
     } else if (action === "send-message") {
       const username = value(body, "username", 80).toLowerCase();
       const kind = value(body, "kind", 20);
       const text = value(body, "text", 5000);
+      const clientId = value(body, "clientId", 100) || crypto.randomUUID();
+      const replyToId = optionalIntegerValue(body, "replyToId");
       if (!messageKinds.has(kind)) throw new HttpError(400, "Choose a supported message type.");
       if (kind === "text" && !text) throw new HttpError(400, "Write a message first.");
-      const targetResult = await database.execute({
-        sql: `SELECT u.id FROM contacts c JOIN users u ON u.id = c.contact_id
-          WHERE c.owner_id = ? AND u.username = ? AND c.approved = 1 LIMIT 1`,
-        args: [user.id, username],
-      });
-      const target = targetResult.rows[0];
-      if (!target) throw new HttpError(403, "Messages can only be sent to approved contacts.");
+      if (!/^[A-Za-z0-9_-]{8,100}$/.test(clientId)) throw new HttpError(400, "Message identifier is invalid.");
+      const targetId = await approvedContactId(database, user.id, username);
+      if (!targetId) throw new HttpError(403, "Messages can only be sent to approved contacts.");
+      if (replyToId != null) {
+        const reply = await conversationMessage(database, replyToId, user.id);
+        const belongsToConversation = reply && (
+          (String(reply.sender_id) === user.id && String(reply.recipient_id) === targetId)
+          || (String(reply.sender_id) === targetId && String(reply.recipient_id) === user.id)
+        );
+        if (!belongsToConversation || reply?.deleted_at != null) throw new HttpError(400, "The replied-to message is no longer available.");
+      }
 
       const mediaUrl = value(body, "mediaUrl", 1000) || null;
       const mediaPublicId = value(body, "mediaPublicId", 500) || null;
@@ -233,13 +339,13 @@ export async function POST(request: Request) {
         }
       }
       await database.execute({
-        sql: `INSERT INTO messages
+        sql: `INSERT OR IGNORE INTO messages
           (sender_id, recipient_id, text, kind, media_url, media_public_id, media_resource_type,
-            media_format, media_bytes, mime_type, file_name, duration, created_at)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            media_format, media_bytes, mime_type, file_name, duration, client_id, reply_to_id, created_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         args: [
           user.id,
-          String(target.id),
+          targetId,
           text,
           kind,
           mediaUrl,
@@ -250,9 +356,12 @@ export async function POST(request: Request) {
           mimeType,
           fileName,
           typeof body.duration === "number" ? Math.max(0, Math.round(body.duration)) : null,
+          clientId,
+          replyToId,
           now,
         ],
       });
+      await database.execute({ sql: "DELETE FROM typing_indicators WHERE user_id = ? AND recipient_id = ?", args: [user.id, targetId] });
     } else {
       throw new HttpError(400, "Unknown action.");
     }

@@ -13,6 +13,15 @@ const messageColumnDefinitions = [
   ["mime_type", "mime_type TEXT"],
   ["file_name", "file_name TEXT"],
   ["duration", "duration INTEGER"],
+  ["client_id", "client_id TEXT"],
+  ["reply_to_id", "reply_to_id INTEGER REFERENCES messages(id) ON DELETE SET NULL"],
+  ["edited_at", "edited_at INTEGER"],
+  ["deleted_at", "deleted_at INTEGER"],
+  ["read_at", "read_at INTEGER"],
+] as const;
+
+const userColumnDefinitions = [
+  ["last_seen_at", "last_seen_at INTEGER"],
 ] as const;
 
 async function messageColumnNames(database: Client) {
@@ -28,6 +37,22 @@ async function ensureMessageColumns(database: Client) {
       await database.execute(`ALTER TABLE messages ADD COLUMN ${definition}`);
     } catch (error) {
       columns = await messageColumnNames(database);
+      if (!columns.has(name)) throw error;
+    }
+    columns.add(name);
+  }
+}
+
+async function ensureUserColumns(database: Client) {
+  const result = await database.execute("PRAGMA table_info(users)");
+  let columns = new Set(result.rows.map((row) => String(row.name)));
+  for (const [name, definition] of userColumnDefinitions) {
+    if (columns.has(name)) continue;
+    try {
+      await database.execute(`ALTER TABLE users ADD COLUMN ${definition}`);
+    } catch (error) {
+      const refreshed = await database.execute("PRAGMA table_info(users)");
+      columns = new Set(refreshed.rows.map((row) => String(row.name)));
       if (!columns.has(name)) throw error;
     }
     columns.add(name);
@@ -58,7 +83,8 @@ export async function ensureSchema(): Promise<Client> {
           phone TEXT NOT NULL DEFAULT '',
           password_salt TEXT NOT NULL,
           password_hash TEXT NOT NULL,
-          created_at INTEGER NOT NULL
+          created_at INTEGER NOT NULL,
+          last_seen_at INTEGER
         )`,
         `CREATE TABLE IF NOT EXISTS sessions (
           token_hash TEXT PRIMARY KEY NOT NULL,
@@ -111,7 +137,25 @@ export async function ensureSchema(): Promise<Client> {
           mime_type TEXT,
           file_name TEXT,
           duration INTEGER,
+          client_id TEXT,
+          reply_to_id INTEGER REFERENCES messages(id) ON DELETE SET NULL,
+          edited_at INTEGER,
+          deleted_at INTEGER,
+          read_at INTEGER,
           created_at INTEGER NOT NULL
+        )`,
+        `CREATE TABLE IF NOT EXISTS message_reactions (
+          message_id INTEGER NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
+          user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+          emoji TEXT NOT NULL,
+          created_at INTEGER NOT NULL,
+          PRIMARY KEY(message_id, user_id)
+        )`,
+        `CREATE TABLE IF NOT EXISTS typing_indicators (
+          user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+          recipient_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+          expires_at INTEGER NOT NULL,
+          PRIMARY KEY(user_id, recipient_id)
         )`,
         "CREATE INDEX IF NOT EXISTS idx_sessions_user_expiry ON sessions(user_id, expires_at)",
         "CREATE INDEX IF NOT EXISTS idx_live_contexts_updated ON live_contexts(updated_at)",
@@ -119,10 +163,13 @@ export async function ensureSchema(): Promise<Client> {
         "CREATE INDEX IF NOT EXISTS idx_contacts_owner ON contacts(owner_id)",
         "CREATE INDEX IF NOT EXISTS idx_messages_sender_recipient_created ON messages(sender_id, recipient_id, created_at)",
         "CREATE INDEX IF NOT EXISTS idx_messages_recipient_sender_created ON messages(recipient_id, sender_id, created_at)",
+        "CREATE INDEX IF NOT EXISTS idx_reactions_message ON message_reactions(message_id, created_at)",
+        "CREATE INDEX IF NOT EXISTS idx_typing_recipient_expiry ON typing_indicators(recipient_id, expires_at)",
       ],
       "write",
     )
-    .then(() => ensureMessageColumns(database))
+    .then(() => Promise.all([ensureMessageColumns(database), ensureUserColumns(database)]))
+    .then(() => database.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_messages_sender_client ON messages(sender_id, client_id) WHERE client_id IS NOT NULL"))
     .then(() => undefined)
     .catch((error) => {
       schemaPromise = null;

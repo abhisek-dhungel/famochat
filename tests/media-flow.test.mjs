@@ -117,3 +117,34 @@ test("preserves text, image, and audio order by timestamp and message ID", () =>
   const ordered = serializeMessageRows(rows, "user-a").map(({ message }) => `${message.id}:${message.kind}`);
   assert.deepEqual(ordered, ["1:text", "2:image", "3:audio", "4:text"]);
 });
+
+test("serializes replies, edits, read receipts, deletion, and reactions", () => {
+  const row = {
+    id: 95,
+    sender_id: "user-a",
+    recipient_id: "user-b",
+    sender_username: "alice",
+    recipient_username: "bob",
+    text: "Updated answer",
+    kind: "text",
+    client_id: "client-message-95",
+    reply_to_id: 94,
+    reply_text: "Original question",
+    reply_kind: "text",
+    reply_sender_id: "user-b",
+    reply_sender_name: "Bob",
+    reply_deleted_at: null,
+    edited_at: 200,
+    deleted_at: null,
+    read_at: 300,
+    reactions: [{ emoji: "❤️", userId: "user-a", username: "alice" }],
+    created_at: 100,
+  };
+  const message = serializeMessageRow(row, "user-a").message;
+  assert.equal(message.clientId, "client-message-95");
+  assert.equal(message.replyTo.text, "Original question");
+  assert.equal(message.replyTo.from, "them");
+  assert.equal(message.editedAt, 200);
+  assert.equal(message.readAt, 300);
+  assert.equal(message.reactions[0].mine, true);
+});

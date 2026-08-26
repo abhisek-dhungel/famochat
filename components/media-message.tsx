@@ -22,6 +22,24 @@ export type ChatMessage = {
   mimeType?: string;
   fileName?: string;
   duration?: number;
+  clientId?: string;
+  editedAt?: number;
+  deletedAt?: number;
+  readAt?: number;
+  replyTo?: {
+    id: number;
+    text: string;
+    kind: MediaMessageKind;
+    from: "me" | "them";
+    senderName: string;
+    deleted: boolean;
+  };
+  reactions?: Array<{
+    emoji: string;
+    userId: string;
+    username: string;
+    mine: boolean;
+  }>;
   deliveryState?: "sending" | "failed";
   uploadProgress?: number;
   deliveryError?: string;

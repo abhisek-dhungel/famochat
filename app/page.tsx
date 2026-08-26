@@ -2,7 +2,7 @@
 
 /* eslint-disable jsx-a11y/no-autofocus, jsx-a11y/no-noninteractive-element-interactions, jsx-a11y/no-static-element-interactions, react-hooks/purity */
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ChangeEvent, CSSProperties, FormEvent } from "react";
 import { MediaMessage, type ChatMessage } from "@/components/media-message";
 import { parseCloudinaryUploadResponse, type CloudinaryResourceType, type MediaMessageKind } from "@/lib/media";
@@ -17,6 +17,8 @@ type Message = ChatMessage;
 type OutgoingMessage = {
   text: string;
   kind: MessageKind;
+  clientId?: string;
+  replyToId?: number;
   mediaUrl?: string;
   mediaPublicId?: string;
   mediaResourceType?: CloudinaryResourceType;
@@ -27,6 +29,13 @@ type OutgoingMessage = {
   mimeType?: string;
   fileName?: string;
   duration?: number;
+};
+
+type PendingText = {
+  id: number;
+  partnerId: string;
+  partnerUsername: string;
+  message: Message;
 };
 
 type PendingAttachment = {
@@ -46,6 +55,11 @@ type Person = {
   category: CircleType;
   online: boolean;
   approved: boolean;
+  typing: boolean;
+  unreadCount: number;
+  lastMessagePreview: string;
+  lastMessageAt: number | null;
+  lastSeenAt: number | null;
   locationShared: boolean;
   liveContextShared: boolean;
   parentalControl: boolean;
@@ -172,16 +186,37 @@ function toneFor(value: string) {
   return tones[total % tones.length];
 }
 
-function formatMessageTime(value: number, mine: boolean) {
+function formatMessageTime(value: number) {
+  return new Intl.DateTimeFormat(undefined, { hour: "numeric", minute: "2-digit" }).format(new Date(value));
+}
+
+function formatConversationTime(value: number | null) {
+  if (!value) return "";
   const date = new Date(value);
   const now = new Date();
-  const sameDay = date.getFullYear() === now.getFullYear()
-    && date.getMonth() === now.getMonth()
-    && date.getDate() === now.getDate();
-  const label = sameDay
-    ? new Intl.DateTimeFormat(undefined, { hour: "numeric", minute: "2-digit" }).format(date)
-    : new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric" }).format(date);
-  return `${label}${mine ? " · Sent" : ""}`;
+  const sameDay = date.toDateString() === now.toDateString();
+  if (sameDay) return new Intl.DateTimeFormat(undefined, { hour: "numeric", minute: "2-digit" }).format(date);
+  const sameYear = date.getFullYear() === now.getFullYear();
+  return new Intl.DateTimeFormat(undefined, sameYear ? { month: "short", day: "numeric" } : { year: "numeric" }).format(date);
+}
+
+function dateLabel(value: number) {
+  const date = new Date(value);
+  const today = new Date();
+  const yesterday = new Date();
+  yesterday.setDate(today.getDate() - 1);
+  if (date.toDateString() === today.toDateString()) return "Today";
+  if (date.toDateString() === yesterday.toDateString()) return "Yesterday";
+  return new Intl.DateTimeFormat(undefined, { weekday: "short", month: "short", day: "numeric" }).format(date);
+}
+
+function messageSummary(message: Message) {
+  if (message.deletedAt) return "Message removed";
+  if (message.kind === "image") return "Photo";
+  if (message.kind === "video") return "Video";
+  if (message.kind === "audio") return "Voice message";
+  if (message.kind === "document") return message.fileName || "Document";
+  return message.text;
 }
 
 type AccountResponse = { account?: Account; error?: string };
@@ -252,6 +287,58 @@ function PendingMediaStatus({ message, onRetry, onDiscard }: { message: Message;
     return <div className="media-send-overlay" role="status" aria-label={`Sending photo, ${progress}% complete`}><span className="media-send-progress" style={{ "--upload-progress": `${progress * 3.6}deg` } as CSSProperties}><b>{progress}%</b></span></div>;
   }
   return <div className="media-send-overlay media-send-failed" role="alert"><span>!</span><strong>Couldn’t send photo</strong><small>{message.deliveryError || "Check your connection and try again."}</small><div><button type="button" onClick={onRetry}>Retry</button><button type="button" onClick={onDiscard}>Remove</button></div></div>;
+}
+
+const quickReactions = ["❤️", "😂", "😮", "😢", "👍", "🔥"];
+
+function MessageBubble({ message, selectedName, actionsOpen, actionsAbove, deliveryLabel, onToggleActions, onPreview, onReply, onReact, onEdit, onDelete, onRetry, onDiscard }: {
+  message: Message;
+  selectedName: string;
+  actionsOpen: boolean;
+  actionsAbove: boolean;
+  deliveryLabel?: string;
+  onToggleActions: () => void;
+  onPreview: (message: Message) => void;
+  onReply: (message: Message) => void;
+  onReact: (message: Message, emoji: string) => void;
+  onEdit: (message: Message) => void;
+  onDelete: (message: Message) => void;
+  onRetry?: () => void;
+  onDiscard?: () => void;
+}) {
+  const kind = message.kind ?? "text";
+  const visualMedia = kind === "image" || kind === "video";
+  const mine = message.from === "me";
+  const myReaction = message.reactions?.find((reaction) => reaction.mine)?.emoji;
+  const groupedReactions = quickReactions.map((emoji) => ({
+    emoji,
+    items: message.reactions?.filter((reaction) => reaction.emoji === emoji) ?? [],
+  })).filter((group) => group.items.length > 0);
+  const canEdit = mine && kind === "text" && !message.deletedAt && !message.deliveryState && Date.now() - message.createdAt <= 15 * 60 * 1000;
+  const canAct = !message.deletedAt && !message.deliveryState;
+  const replyLabel = message.replyTo?.deleted
+    ? "Original message unavailable"
+    : message.replyTo
+      ? messageSummary({ ...message, ...message.replyTo, id: message.replyTo.id, createdAt: message.createdAt, senderId: "", recipientId: "", from: message.replyTo.from }).slice(0, 120)
+      : "";
+
+  return <div className={`message-row ${mine ? "mine" : "theirs"}`}>
+    <div className={`bubble ${mine ? "outgoing" : "incoming"} ${kind !== "text" ? "media-bubble" : ""} ${visualMedia ? "visual-media-bubble" : ""} ${kind === "image" ? "image-media-bubble" : ""} ${kind === "audio" ? "audio-media-bubble" : ""} ${message.deliveryState ? `is-${message.deliveryState}` : ""} ${message.deletedAt ? "deleted-message" : ""}`}>
+      {message.replyTo && <div className="reply-quote"><strong>{message.replyTo.from === "me" ? "You" : message.replyTo.senderName || selectedName}</strong><span>{replyLabel || "Attachment"}</span></div>}
+      {message.deletedAt ? <span className="removed-copy">⊘ Message removed</span> : kind === "text" ? <span className="message-text">{message.text}</span> : <MediaMessage message={message} onPreview={onPreview} />}
+      {kind === "image" && message.deliveryState && onRetry && onDiscard && <PendingMediaStatus message={message} onRetry={onRetry} onDiscard={onDiscard} />}
+      {message.deliveryState === "failed" && kind === "text" && <div className="text-send-failed"><span>Not sent</span><button type="button" onClick={onRetry}>Retry</button><button type="button" onClick={onDiscard}>Remove</button></div>}
+      <time>{message.deliveryState === "sending" ? kind === "image" ? `Sending ${Math.round(message.uploadProgress ?? 0)}%` : "Sending…" : message.deliveryState === "failed" ? "Not sent" : <>{formatMessageTime(message.createdAt)}{message.editedAt ? " · Edited" : ""}{deliveryLabel ? ` · ${deliveryLabel}` : ""}</>}</time>
+    </div>
+    {groupedReactions.length > 0 && <div className="reaction-chips" aria-label="Message reactions">{groupedReactions.map((group) => <button type="button" className={group.items.some((item) => item.mine) ? "mine" : ""} key={group.emoji} title={group.items.map((item) => item.mine ? "You" : `@${item.username}`).join(", ")} onClick={() => onReact(message, group.items.some((item) => item.mine) ? "" : group.emoji)}>{group.emoji}{group.items.length > 1 && <span>{group.items.length}</span>}</button>)}</div>}
+    {canAct && <button type="button" className="message-actions-trigger" aria-label="Message actions" aria-expanded={actionsOpen} onClick={onToggleActions}>•••</button>}
+    {actionsOpen && canAct && <div className={`message-actions-menu ${actionsAbove ? "opens-up" : ""}`} role="menu">
+      <div className="quick-reactions">{quickReactions.map((emoji) => <button type="button" key={emoji} className={myReaction === emoji ? "selected" : ""} aria-label={`React ${emoji}`} onClick={() => onReact(message, myReaction === emoji ? "" : emoji)}>{emoji}</button>)}</div>
+      <button type="button" role="menuitem" onClick={() => onReply(message)}>Reply <span>↩</span></button>
+      {canEdit && <button type="button" role="menuitem" onClick={() => onEdit(message)}>Edit <span>✎</span></button>}
+      {mine && <button type="button" role="menuitem" className="danger" onClick={() => onDelete(message)}>Remove for everyone <span>⊘</span></button>}
+    </div>}
+  </div>;
 }
 
 function Brand() {
@@ -379,7 +466,7 @@ function AuthForm({ mode, onBack, onAuthenticate, onSwitch }: {
   );
 }
 
-function Messenger({ account, onSignOut, onUpdateContact, onSendRequest, onApproveRequest, onDeclineRequest, onRemoveContact, onSendMessage, onRequestLocation }: {
+function Messenger({ account, onSignOut, onUpdateContact, onSendRequest, onApproveRequest, onDeclineRequest, onRemoveContact, onSendMessage, onMarkRead, onTyping, onReactMessage, onEditMessage, onDeleteMessage, onRequestLocation }: {
   account: Account;
   onSignOut: () => Promise<void>;
   onUpdateContact: (username: string, patch: Pick<Person, "locationShared" | "parentalControl">) => Promise<string | null>;
@@ -388,19 +475,32 @@ function Messenger({ account, onSignOut, onUpdateContact, onSendRequest, onAppro
   onDeclineRequest: (request: RelationshipRequest) => Promise<string | null>;
   onRemoveContact: (username: string) => Promise<string | null>;
   onSendMessage: (username: string, message: OutgoingMessage) => Promise<string | null>;
+  onMarkRead: (username: string) => Promise<string | null>;
+  onTyping: (username: string, typing: boolean) => Promise<string | null>;
+  onReactMessage: (messageId: number, emoji: string) => Promise<string | null>;
+  onEditMessage: (messageId: number, text: string) => Promise<string | null>;
+  onDeleteMessage: (messageId: number) => Promise<string | null>;
   onRequestLocation: () => Promise<boolean>;
 }) {
   const people = account.contacts;
   const messages = account.messages;
   const [selectedId, setSelectedId] = useState("");
-  const [draft, setDraft] = useState("");
+  const [drafts, setDrafts] = useState<Record<string, string>>({});
   const [search, setSearch] = useState("");
   const [collapsed, setCollapsed] = useState(false);
   const [mobileList, setMobileList] = useState(true);
   const [addOpen, setAddOpen] = useState(false);
   const [noticesOpen, setNoticesOpen] = useState(false);
   const [profileOpen, setProfileOpen] = useState(false);
+  const [accountMenuOpen, setAccountMenuOpen] = useState(false);
   const [detailsOpen, setDetailsOpen] = useState(false);
+  const [conversationSearchOpen, setConversationSearchOpen] = useState(false);
+  const [conversationSearch, setConversationSearch] = useState("");
+  const [replyingTo, setReplyingTo] = useState<Message | null>(null);
+  const [editingMessage, setEditingMessage] = useState<Message | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<Message | null>(null);
+  const [actionMessageId, setActionMessageId] = useState<number | null>(null);
+  const [showJumpToLatest, setShowJumpToLatest] = useState(false);
   const [removeTarget, setRemoveTarget] = useState<Person | null>(null);
   const [parentPrompt, setParentPrompt] = useState<Person | null>(null);
   const [lockRequest, setLockRequest] = useState<Person | null>(null);
@@ -412,6 +512,7 @@ function Messenger({ account, onSignOut, onUpdateContact, onSendRequest, onAppro
   const [previewMessage, setPreviewMessage] = useState<Message | null>(null);
   const [previewZoomed, setPreviewZoomed] = useState(false);
   const [pendingAttachments, setPendingAttachments] = useState<PendingAttachment[]>([]);
+  const [pendingTexts, setPendingTexts] = useState<PendingText[]>([]);
   const photoInputRef = useRef<HTMLInputElement>(null);
   const videoInputRef = useRef<HTMLInputElement>(null);
   const documentInputRef = useRef<HTMLInputElement>(null);
@@ -420,15 +521,33 @@ function Messenger({ account, onSignOut, onUpdateContact, onSendRequest, onAppro
   const recordingChunksRef = useRef<Blob[]>([]);
   const recordingStartedRef = useRef(0);
   const recordingTargetRef = useRef("");
+  const recordingReplyRef = useRef<Message | null>(null);
   const messagesRef = useRef<HTMLDivElement>(null);
+  const composerInputRef = useRef<HTMLTextAreaElement>(null);
   const nextPendingIdRef = useRef(-1);
   const pendingObjectUrlsRef = useRef(new Map<number, string>());
+  const typingTimerRef = useRef<number | null>(null);
+  const typingTargetRef = useRef("");
+  const typingPulseRef = useRef(0);
+  const onTypingRef = useRef(onTyping);
+  const stickToBottomRef = useRef(true);
   const emojis = ["❤️", "😂", "🥰", "😊", "👍", "🙏", "😍", "🎉", "😢", "🤗", "🔥", "✨", "💯", "👋", "😘", "🫶"];
 
   const selected = people.find((person) => person.id === selectedId) ?? people.find((person) => person.approved);
+  const draft = selected ? drafts[selected.id] ?? "" : "";
   const activeMessages = selected ? messages[selected.id] ?? [] : [];
-  const pendingMessages = selected ? pendingAttachments.filter((attachment) => attachment.partnerId === selected.id).map((attachment) => attachment.message) : [];
+  const serverClientIds = new Set(activeMessages.map((message) => message.clientId).filter(Boolean));
+  const pendingMessages = selected ? [
+    ...pendingAttachments.filter((attachment) => attachment.partnerId === selected.id).map((attachment) => attachment.message),
+    ...pendingTexts.filter((pending) => pending.partnerId === selected.id && !serverClientIds.has(pending.message.clientId)).map((pending) => pending.message),
+  ] : [];
   const displayedMessages = [...activeMessages, ...pendingMessages].sort((left, right) => left.createdAt - right.createdAt || left.id - right.id);
+  const normalizedConversationSearch = conversationSearch.trim().toLowerCase();
+  const visibleMessages = normalizedConversationSearch
+    ? displayedMessages.filter((message) => `${message.text} ${message.fileName ?? ""} ${message.replyTo?.text ?? ""}`.toLowerCase().includes(normalizedConversationSearch))
+    : displayedMessages;
+  const lastOutgoingId = [...displayedMessages].reverse().find((message) => message.from === "me" && !message.deliveryState && !message.deletedAt)?.id;
+  const lastDisplayedMessageFrom = displayedMessages.at(-1)?.from;
   const filteredPeople = people.filter((person) => `${person.name} ${person.relation} ${person.username}`.toLowerCase().includes(search.toLowerCase()));
   const userInitials = initials(account.name);
 
@@ -447,10 +566,24 @@ function Messenger({ account, onSignOut, onUpdateContact, onSendRequest, onAppro
   useEffect(() => {
     const frame = window.requestAnimationFrame(() => {
       const messageList = messagesRef.current;
-      if (messageList) messageList.scrollTo({ top: messageList.scrollHeight, behavior: "smooth" });
+      if (messageList && (stickToBottomRef.current || lastDisplayedMessageFrom === "me")) {
+        messageList.scrollTo({ top: messageList.scrollHeight, behavior: "smooth" });
+        setShowJumpToLatest(false);
+      } else if (messageList) {
+        setShowJumpToLatest(true);
+      }
     });
     return () => window.cancelAnimationFrame(frame);
-  }, [selected?.id, displayedMessages.length]);
+  }, [selected?.id, displayedMessages.length, lastDisplayedMessageFrom]);
+
+  useEffect(() => {
+    if (!selected || selected.unreadCount < 1 || document.visibilityState !== "visible") return;
+    const desktop = window.matchMedia("(min-width: 761px)").matches;
+    if (!desktop && mobileList) return;
+    void onMarkRead(selected.username);
+  }, [mobileList, onMarkRead, selected]);
+
+  useEffect(() => { onTypingRef.current = onTyping; }, [onTyping]);
 
   useEffect(() => () => {
     if (recorderRef.current && recorderRef.current.state !== "inactive") {
@@ -460,6 +593,8 @@ function Messenger({ account, onSignOut, onUpdateContact, onSendRequest, onAppro
     recordingStreamRef.current?.getTracks().forEach((track) => track.stop());
     for (const objectUrl of pendingObjectUrlsRef.current.values()) URL.revokeObjectURL(objectUrl);
     pendingObjectUrlsRef.current.clear();
+    if (typingTimerRef.current) window.clearTimeout(typingTimerRef.current);
+    if (typingTargetRef.current) void onTypingRef.current(typingTargetRef.current, false);
   }, []);
 
   useEffect(() => {
@@ -479,10 +614,43 @@ function Messenger({ account, onSignOut, onUpdateContact, onSendRequest, onAppro
     }).then((error) => { if (error) setToast(error); });
   };
 
+  const stopTyping = (username = typingTargetRef.current) => {
+    if (typingTimerRef.current) window.clearTimeout(typingTimerRef.current);
+    typingTimerRef.current = null;
+    if (username) void onTyping(username, false);
+    typingTargetRef.current = "";
+    typingPulseRef.current = 0;
+  };
+
+  const updateDraft = (next: string | ((current: string) => string)) => {
+    if (!selected) return;
+    setDrafts((current) => {
+      const value = typeof next === "function" ? next(current[selected.id] ?? "") : next;
+      return { ...current, [selected.id]: value };
+    });
+    const now = Date.now();
+    if (typingTargetRef.current && typingTargetRef.current !== selected.username) stopTyping();
+    if (now - typingPulseRef.current > 2_000 || typingTargetRef.current !== selected.username) {
+      typingTargetRef.current = selected.username;
+      typingPulseRef.current = now;
+      void onTyping(selected.username, true);
+    }
+    if (typingTimerRef.current) window.clearTimeout(typingTimerRef.current);
+    typingTimerRef.current = window.setTimeout(() => stopTyping(selected.username), 2_800);
+  };
+
   const choosePerson = (person: Person) => {
     if (!person.approved) { setToast(`Waiting for @${person.username} to approve your relationship.`); return; }
+    if (selected?.username !== person.username) stopTyping();
+    setReplyingTo(null);
+    setEditingMessage(null);
+    setActionMessageId(null);
+    setConversationSearch("");
+    setConversationSearchOpen(false);
+    stickToBottomRef.current = true;
     setSelectedId(person.id);
     setMobileList(false);
+    if (person.unreadCount > 0) void onMarkRead(person.username);
   };
 
   const toggleLocation = async (person: Person) => {
@@ -497,13 +665,130 @@ function Messenger({ account, onSignOut, onUpdateContact, onSendRequest, onAppro
     setToast(!person.locationShared ? `Location shared with ${person.name}.` : `Location sharing paused for ${person.name}.`);
   };
 
-  const sendMessage = (event: FormEvent) => {
+  const sendMessage = async (event: FormEvent) => {
     event.preventDefault();
     const text = draft.trim();
     if (!text || !selected) return;
-    void onSendMessage(selected.username, { kind: "text", text }).then((error) => { if (error) setToast(error); });
-    setDraft("");
+    stopTyping(selected.username);
+    if (editingMessage) {
+      const error = await onEditMessage(editingMessage.id, text);
+      if (error) { setToast(error); return; }
+      setEditingMessage(null);
+      setDrafts((current) => ({ ...current, [selected.id]: "" }));
+      setToast("Message updated.");
+      return;
+    }
+    const id = nextPendingIdRef.current--;
+    const clientId = crypto.randomUUID();
+    const replyTo = replyingTo ? {
+      id: replyingTo.id,
+      text: replyingTo.text,
+      kind: replyingTo.kind ?? "text",
+      from: replyingTo.from,
+      senderName: replyingTo.from === "me" ? account.name : selected.name,
+      deleted: Boolean(replyingTo.deletedAt),
+    } : undefined;
+    const pending: PendingText = {
+      id,
+      partnerId: selected.id,
+      partnerUsername: selected.username,
+      message: {
+        id,
+        clientId,
+        senderId: account.username,
+        recipientId: selected.id,
+        text,
+        from: "me",
+        createdAt: Date.now(),
+        kind: "text",
+        replyTo,
+        deliveryState: "sending",
+      },
+    };
+    setPendingTexts((current) => [...current, pending]);
+    setDrafts((current) => ({ ...current, [selected.id]: "" }));
+    setReplyingTo(null);
     setEmojiOpen(false);
+    const error = await onSendMessage(selected.username, { kind: "text", text, clientId, replyToId: replyingTo?.id });
+    if (error) {
+      setPendingTexts((current) => current.map((item) => item.id === id ? { ...item, message: { ...item.message, deliveryState: "failed", deliveryError: error } } : item));
+      setToast(error);
+      return;
+    }
+    setPendingTexts((current) => current.filter((item) => item.id !== id));
+  };
+
+  const retryPendingText = async (id: number) => {
+    const pending = pendingTexts.find((item) => item.id === id);
+    if (!pending) return;
+    setPendingTexts((current) => current.map((item) => item.id === id ? { ...item, message: { ...item.message, deliveryState: "sending", deliveryError: undefined } } : item));
+    const error = await onSendMessage(pending.partnerUsername, {
+      kind: "text",
+      text: pending.message.text,
+      clientId: pending.message.clientId,
+      replyToId: pending.message.replyTo?.id,
+    });
+    if (error) {
+      setPendingTexts((current) => current.map((item) => item.id === id ? { ...item, message: { ...item.message, deliveryState: "failed", deliveryError: error } } : item));
+      setToast(error);
+      return;
+    }
+    setPendingTexts((current) => current.filter((item) => item.id !== id));
+  };
+
+  const discardPendingText = (id: number) => setPendingTexts((current) => current.filter((item) => item.id !== id));
+
+  const replyToMessage = (message: Message) => {
+    setReplyingTo(message);
+    setEditingMessage(null);
+    setActionMessageId(null);
+    window.requestAnimationFrame(() => composerInputRef.current?.focus());
+  };
+
+  const editTextMessage = (message: Message) => {
+    if (!selected) return;
+    setEditingMessage(message);
+    setReplyingTo(null);
+    setActionMessageId(null);
+    setDrafts((current) => ({ ...current, [selected.id]: message.text }));
+    window.requestAnimationFrame(() => {
+      const input = composerInputRef.current;
+      input?.focus();
+      input?.setSelectionRange(input.value.length, input.value.length);
+    });
+  };
+
+  const reactToMessage = async (message: Message, emoji: string) => {
+    setActionMessageId(null);
+    const error = await onReactMessage(message.id, emoji);
+    if (error) setToast(error);
+  };
+
+  const deleteMessage = async (message: Message) => {
+    const error = await onDeleteMessage(message.id);
+    if (error) { setToast(error); return; }
+    setDeleteTarget(null);
+    setActionMessageId(null);
+    if (replyingTo?.id === message.id) setReplyingTo(null);
+    if (editingMessage?.id === message.id) setEditingMessage(null);
+    setToast("Message removed for everyone.");
+  };
+
+  const handleMessagesScroll = () => {
+    const list = messagesRef.current;
+    if (!list) return;
+    const nearBottom = list.scrollHeight - list.scrollTop - list.clientHeight < 90;
+    stickToBottomRef.current = nearBottom;
+    setShowJumpToLatest(!nearBottom);
+    if (nearBottom && selected && selected.unreadCount > 0) void onMarkRead(selected.username);
+  };
+
+  const jumpToLatest = () => {
+    const list = messagesRef.current;
+    if (!list) return;
+    stickToBottomRef.current = true;
+    setShowJumpToLatest(false);
+    list.scrollTo({ top: list.scrollHeight, behavior: "smooth" });
   };
 
   const openPhotoPreview = (message: Message) => {
@@ -529,7 +814,7 @@ function Messenger({ account, onSignOut, onUpdateContact, onSendRequest, onAppro
         updatePendingAttachment(attachment.id, { uploadProgress: progress });
       });
       updatePendingAttachment(attachment.id, { uploadProgress: 96 });
-      const error = await onSendMessage(attachment.partnerUsername, { kind: attachment.kind, text: "", ...uploaded, mimeType: attachment.file.type, fileName: attachment.file.name });
+      const error = await onSendMessage(attachment.partnerUsername, { kind: attachment.kind, text: "", ...uploaded, mimeType: attachment.file.type, fileName: attachment.file.name, clientId: attachment.message.clientId, replyToId: attachment.message.replyTo?.id });
       if (error) throw new Error(error);
       removePendingAttachment(attachment.id);
       setToast(attachment.kind === "image" ? "Photo sent." : attachment.kind === "video" ? "Video sent." : "Document sent.");
@@ -550,6 +835,8 @@ function Messenger({ account, onSignOut, onUpdateContact, onSendRequest, onAppro
     event.target.value = "";
     setAttachmentMenuOpen(false);
     if (files.length === 0 || !selected) return;
+    const attachmentReply = replyingTo;
+    setReplyingTo(null);
     const limit = kind === "image" ? 25 * 1024 * 1024 : kind === "video" ? 100 * 1024 * 1024 : 50 * 1024 * 1024;
     if (kind !== "image") {
       const file = files[0];
@@ -562,7 +849,7 @@ function Messenger({ account, onSignOut, onUpdateContact, onSendRequest, onAppro
         try {
           setToast("Uploading attachment…");
           const uploaded = await uploadToCloudinary(file, kind, file.name);
-          const error = await onSendMessage(targetUsername, { kind, text: "", ...uploaded, mimeType: file.type, fileName: file.name });
+          const error = await onSendMessage(targetUsername, { kind, text: "", ...uploaded, mimeType: file.type, fileName: file.name, clientId: crypto.randomUUID(), replyToId: attachmentReply?.id });
           if (error) throw new Error(error);
           setToast(kind === "video" ? "Video sent." : "Document sent.");
         } catch (error) {
@@ -591,12 +878,21 @@ function Messenger({ account, onSignOut, onUpdateContact, onSendRequest, onAppro
         kind,
         message: {
           id,
+          clientId: crypto.randomUUID(),
           senderId: account.username,
           recipientId: selected.id,
           text: "",
           from: "me",
           createdAt: Date.now() + Math.abs(id) / 1000,
           kind,
+          replyTo: attachmentReply ? {
+            id: attachmentReply.id,
+            text: attachmentReply.text,
+            kind: attachmentReply.kind ?? "text",
+            from: attachmentReply.from,
+            senderName: attachmentReply.from === "me" ? account.name : selected.name,
+            deleted: Boolean(attachmentReply.deletedAt),
+          } : undefined,
           mediaUrl: objectUrl,
           mimeType: file.type,
           fileName: file.name,
@@ -630,6 +926,8 @@ function Messenger({ account, onSignOut, onUpdateContact, onSendRequest, onAppro
       recordingStreamRef.current = stream;
       recordingChunksRef.current = [];
       recordingTargetRef.current = selected.username;
+      recordingReplyRef.current = replyingTo;
+      setReplyingTo(null);
       recordingStartedRef.current = Date.now();
       setRecordingSeconds(0);
       recorder.ondataavailable = (event) => { if (event.data.size > 0) recordingChunksRef.current.push(event.data); };
@@ -646,15 +944,18 @@ function Messenger({ account, onSignOut, onUpdateContact, onSendRequest, onAppro
           const extension = blob.type.includes("mp4") ? "m4a" : blob.type.includes("ogg") ? "ogg" : "webm";
           const fileName = `voice-${Date.now()}.${extension}`;
           const uploaded = await uploadToCloudinary(blob, "audio", fileName);
-          const error = await onSendMessage(recordingTargetRef.current, { kind: "audio", text: "", ...uploaded, mimeType: blob.type, fileName, duration });
+          const error = await onSendMessage(recordingTargetRef.current, { kind: "audio", text: "", ...uploaded, mimeType: blob.type, fileName, duration, clientId: crypto.randomUUID(), replyToId: recordingReplyRef.current?.id });
           if (error) throw new Error(error);
           setToast("Voice message sent.");
         } catch (error) {
           setToast(error instanceof Error ? error.message : "The voice message could not be uploaded.");
+        } finally {
+          recordingReplyRef.current = null;
         }
       };
       recorder.onerror = () => {
         stream.getTracks().forEach((track) => track.stop());
+        recordingReplyRef.current = null;
         setRecording(false);
         setToast("Voice recording stopped unexpectedly.");
       };
@@ -682,22 +983,52 @@ function Messenger({ account, onSignOut, onUpdateContact, onSendRequest, onAppro
     <main className="site-shell messenger-shell">
       <div className="ambient ambient-one" /><div className="ambient ambient-two" />
       <section className={`messenger ${collapsed ? "pane-collapsed" : ""}`} aria-label="Famochat messenger">
-        <header className="window-bar"><WindowDots onMinimize={() => setCollapsed((value) => !value)} /><Brand /><div className="window-actions"><button className="notice-button" aria-label={`${account.requests.length} relationship requests`} onClick={() => { setNoticesOpen(true); setProfileOpen(false); }}>◇{account.requests.length > 0 && <i />}</button><button className="profile-button" aria-label="Open account menu" onClick={() => setProfileOpen((value) => !value)}>{userInitials}</button>{profileOpen && <div className="profile-menu"><div><strong>{account.name}</strong><small>@{account.username}</small></div><button onClick={() => setToast("Settings are ready for your preferences.")}>Preferences <span>›</span></button><button onClick={() => { void onSignOut(); }}>Sign out <span>↗</span></button></div>}</div></header>
+        <header className="window-bar"><WindowDots onMinimize={() => setCollapsed((value) => !value)} /><Brand /><div className="window-actions"><button className="notice-button" aria-label={`${account.requests.length} relationship requests`} onClick={() => { setNoticesOpen(true); setProfileOpen(false); }}>◇{account.requests.length > 0 && <i />}</button><button className="profile-button" aria-label="Open account menu" aria-expanded={profileOpen} onClick={() => setProfileOpen((value) => !value)}>{userInitials}</button>{profileOpen && <div className="profile-menu"><div><strong>{account.name}</strong><small>@{account.username}</small></div><button onClick={() => { setNoticesOpen(true); setProfileOpen(false); }}>Relationship requests <span>{account.requests.length}</span></button><button onClick={() => { void onSignOut(); }}>Sign out <span>↗</span></button></div>}</div></header>
         <div className={`workspace ${mobileList ? "mobile-list" : ""}`}>
           <aside className="people-pane">
             <div className="pane-heading"><div className="pane-title"><span className="eyebrow">Your circle</span><h1>People</h1></div><div className="pane-tools"><button className="mobile-notice" aria-label={`${account.requests.length} requests`} onClick={() => setNoticesOpen(true)}>◇{account.requests.length > 0 && <i />}</button><button className="add-button" onClick={() => setAddOpen(true)} aria-label="Add a person">+</button></div></div>
             <label className="search-field"><span aria-hidden="true">⌕</span><input aria-label="Search people" value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search your circle" /></label>
             <div className="people-list">
-              {filteredPeople.map((person) => <div className={`person-row ${selected?.id === person.id ? "active" : ""} ${!person.approved ? "pending" : ""}`} key={person.id}><button className="person-main" onClick={() => choosePerson(person)} aria-label={`Open chat with ${person.name}`}><span className={`avatar ${person.tone}`}>{initials(person.name)}<i className={person.online ? "online" : "offline"} /></span><span className="person-copy"><strong>{person.name}</strong><small>{person.approved ? person.relation : "Approval pending"}</small></span></button><button className={`share-toggle ${person.locationShared ? "on" : ""} ${person.parentalControl ? "locked" : ""}`} onClick={() => toggleLocation(person)} aria-label={`${person.locationShared ? "Stop" : "Start"} sharing location with ${person.name}`} aria-pressed={person.locationShared} disabled={!person.approved}><span>{person.parentalControl ? "•" : ""}</span></button></div>)}
+              {filteredPeople.map((person) => <div className={`person-row ${selected?.id === person.id ? "active" : ""} ${!person.approved ? "pending" : ""}`} key={person.id}><button className="person-main" onClick={() => choosePerson(person)} aria-label={`Open chat with ${person.name}`}><span className={`avatar ${person.tone}`}>{initials(person.name)}<i className={person.online ? "online" : "offline"} /></span><span className="person-copy"><span className="person-name-line"><strong>{person.name}</strong><time>{formatConversationTime(person.lastMessageAt)}</time></span><span className="person-preview-line"><small className={person.typing ? "typing-copy" : ""}>{!person.approved ? "Approval pending" : person.typing ? "typing…" : person.lastMessagePreview || person.relation}</small>{person.unreadCount > 0 && <b className="unread-badge" aria-label={`${person.unreadCount} unread messages`}>{person.unreadCount > 99 ? "99+" : person.unreadCount}</b>}</span></span></button><button className={`share-toggle ${person.locationShared ? "on" : ""} ${person.parentalControl ? "locked" : ""}`} onClick={() => toggleLocation(person)} aria-label={`${person.locationShared ? "Stop" : "Start"} sharing location with ${person.name}`} aria-pressed={person.locationShared} disabled={!person.approved}><span>{person.parentalControl ? "•" : ""}</span></button></div>)}
               {filteredPeople.length === 0 && <div className="empty-list">{people.length === 0 ? "No contacts yet. Add another Famochat account to begin." : "No one in your circle matches that search."}</div>}
             </div>
-            <div className="pane-footer"><button className="you-card" onClick={() => setProfileOpen(true)}><span className="avatar you-avatar">{userInitials}<i className="online" /></span><span><strong>{account.name}</strong><small>@{account.username}</small></span><b>•••</b></button><div className="secure-note"><span>◈</span><p><strong>Your circle stays yours.</strong><br />Encrypted in transit</p></div></div>
+            <div className="pane-footer"><button className="you-card" aria-label="Open your account menu" aria-expanded={accountMenuOpen} onClick={() => setAccountMenuOpen((value) => !value)}><span className="avatar you-avatar">{userInitials}<i className="online" /></span><span><strong>{account.name}</strong><small>@{account.username}</small></span><b>•••</b></button>{accountMenuOpen && <div className="profile-menu sidebar-profile-menu"><div><strong>{account.name}</strong><small>@{account.username}</small></div><button onClick={() => { setNoticesOpen(true); setAccountMenuOpen(false); }}>Relationship requests <span>{account.requests.length}</span></button><button onClick={() => { void onSignOut(); }}>Log out <span>↗</span></button></div>}<div className="secure-note"><span>◈</span><p><strong>Your circle stays yours.</strong><br />Encrypted in transit</p></div></div>
           </aside>
           <section className="chat-pane">
-            {selected ? <><div className="chat-topbar"><button className="mobile-back" onClick={() => setMobileList(true)} aria-label="Back to people">‹</button><button className="desktop-collapse" onClick={() => setCollapsed((value) => !value)} aria-label="Toggle people panel">◫</button><span className={`avatar compact ${selected.tone}`}>{initials(selected.name)}<i className={selected.online ? "online" : "offline"} /></span><div className="chat-title"><strong>{selected.name}</strong><small>{selected.online ? `${selected.activity} · now` : "Offline"}</small></div><button className="circle-action" aria-label={`Call ${selected.name}`} onClick={() => setToast(`Starting a private call with ${selected.name}…`)}>⌁</button><button className="circle-action" aria-label="Conversation details" onClick={() => setDetailsOpen(true)}>•••</button></div>
+            {selected ? <><div className="chat-topbar"><button className="mobile-back" onClick={() => { stopTyping(); setMobileList(true); }} aria-label="Back to people">‹</button><button className="desktop-collapse" onClick={() => setCollapsed((value) => !value)} aria-label="Toggle people panel">◫</button><span className={`avatar compact ${selected.tone}`}>{initials(selected.name)}<i className={selected.online ? "online" : "offline"} /></span><div className="chat-title"><strong>{selected.name}</strong><small className={selected.typing ? "typing-copy" : ""}>{selected.typing ? "typing…" : selected.activity}</small></div><button className={`circle-action ${conversationSearchOpen ? "active" : ""}`} aria-label={`Search conversation with ${selected.name}`} aria-pressed={conversationSearchOpen} onClick={() => { setConversationSearchOpen((value) => !value); setConversationSearch(""); }}>⌕</button><button className="circle-action" aria-label="Conversation details" onClick={() => setDetailsOpen(true)}>•••</button></div>
+            {conversationSearchOpen && <label className="conversation-search"><span>⌕</span><input autoFocus value={conversationSearch} onChange={(event) => setConversationSearch(event.target.value)} placeholder={`Search messages with ${selected.name}`} aria-label={`Search messages with ${selected.name}`} /><button type="button" onClick={() => { setConversationSearchOpen(false); setConversationSearch(""); }} aria-label="Close conversation search">×</button></label>}
             {selected.liveContextShared ? <div className="live-card"><div className="live-map" aria-hidden="true"><span className="road road-one" /><span className="road road-two" /><span className="map-pin"><i /></span></div><div className="live-primary"><span className="live-label"><i /> Live context</span><h2>{selected.location}</h2><p>{selected.eta}</p></div><div className="live-stats"><div><span>{selected.activity}</span><strong>{selected.speed}</strong></div><div><span>Weather</span><strong>{selected.temperature} <small>{selected.weather}</small></strong></div><div><span>Battery</span><strong>{selected.battery == null ? "—" : `${selected.battery}%`} <small>{selected.battery == null ? "Unavailable" : selected.charging ? "Charging" : selected.battery > 25 ? "Good" : "Low"}</small></strong></div></div><button className="live-more" aria-label="Open live map" onClick={() => setToast(`${selected.name} is near ${selected.location}.`)}>↗</button></div> : <div className="private-card"><span>◎</span><div><strong>{selected.name}’s live context is private</strong><p>Location, weather, and battery appear here when {selected.name} shares them with you.</p></div><button onClick={() => toggleLocation(selected)}>{selected.locationShared ? "Pause mine" : "Share mine"}</button></div>}
-            <div className="messages" ref={messagesRef} role="log" aria-live="polite" aria-relevant="additions text"><div className="day-label">Today</div>{displayedMessages.map((message) => { const kind = message.kind ?? "text"; const visualMedia = kind === "image" || kind === "video"; return <div className={`bubble ${message.from === "me" ? "outgoing" : "incoming"} ${kind !== "text" ? "media-bubble" : ""} ${visualMedia ? "visual-media-bubble" : ""} ${kind === "image" ? "image-media-bubble" : ""} ${kind === "audio" ? "audio-media-bubble" : ""} ${message.deliveryState ? `is-${message.deliveryState}` : ""}`} key={message.id}>{kind === "text" ? message.text : <MediaMessage message={message} onPreview={openPhotoPreview} />}{kind === "image" && <PendingMediaStatus message={message} onRetry={() => retryPendingAttachment(message.id)} onDiscard={() => removePendingAttachment(message.id)} />}<time>{message.deliveryState === "sending" ? `Sending ${Math.round(message.uploadProgress ?? 0)}%` : message.deliveryState === "failed" ? "Not sent" : formatMessageTime(message.createdAt, message.from === "me")}</time></div>; })}</div>
+            <div className="messages" ref={messagesRef} onScroll={handleMessagesScroll} role="log" aria-live="polite" aria-relevant="additions text">
+              {visibleMessages.map((message, index) => {
+                const previous = visibleMessages[index - 1];
+                const showDate = !previous || new Date(previous.createdAt).toDateString() !== new Date(message.createdAt).toDateString();
+                const isPendingAttachment = message.id < 0 && message.kind === "image";
+                const isPendingText = message.id < 0 && message.kind === "text";
+                return <Fragment key={message.clientId || message.id}>
+                  {showDate && <div className="day-label">{dateLabel(message.createdAt)}</div>}
+                  <MessageBubble
+                    message={message}
+                    selectedName={selected.name}
+                    actionsOpen={actionMessageId === message.id}
+                    actionsAbove={index >= visibleMessages.length - 2}
+                    deliveryLabel={message.id === lastOutgoingId ? message.readAt ? "Seen" : "Sent" : undefined}
+                    onToggleActions={() => setActionMessageId((current) => current === message.id ? null : message.id)}
+                    onPreview={openPhotoPreview}
+                    onReply={replyToMessage}
+                    onReact={(target, emoji) => { void reactToMessage(target, emoji); }}
+                    onEdit={editTextMessage}
+                    onDelete={(target) => { setActionMessageId(null); setDeleteTarget(target); }}
+                    onRetry={isPendingAttachment ? () => retryPendingAttachment(message.id) : isPendingText ? () => { void retryPendingText(message.id); } : undefined}
+                    onDiscard={isPendingAttachment ? () => removePendingAttachment(message.id) : isPendingText ? () => discardPendingText(message.id) : undefined}
+                  />
+                </Fragment>;
+              })}
+              {selected.typing && !normalizedConversationSearch && <div className="typing-indicator" role="status" aria-label={`${selected.name} is typing`}><i /><i /><i /></div>}
+              {normalizedConversationSearch && visibleMessages.length === 0 && <div className="message-search-empty">No messages match “{conversationSearch.trim()}”.</div>}
+            </div>
+            {showJumpToLatest && !normalizedConversationSearch && <button type="button" className="jump-latest" onClick={jumpToLatest}>Newest messages ↓</button>}
             <form className={`composer ${recording ? "is-recording" : ""}`} onSubmit={sendMessage}>
+              {(replyingTo || editingMessage) && <div className="composer-context"><span>{editingMessage ? "Editing message" : `Replying to ${replyingTo?.from === "me" ? "yourself" : selected.name}`}</span><strong>{messageSummary(editingMessage || replyingTo!).slice(0, 140)}</strong><button type="button" aria-label="Cancel" onClick={() => { setReplyingTo(null); setEditingMessage(null); if (editingMessage) setDrafts((current) => ({ ...current, [selected.id]: "" })); }}>×</button></div>}
               <div className="composer-tool attachment-tool">
                 <button type="button" className={`round-action ${attachmentMenuOpen ? "active" : ""}`} aria-label="Share a photo, video, or document" aria-expanded={attachmentMenuOpen} onClick={() => { setAttachmentMenuOpen((value) => !value); setEmojiOpen(false); }}>+</button>
                 <input ref={photoInputRef} hidden type="file" accept="image/*" multiple onChange={(event) => sendFile(event, "image")} />
@@ -705,10 +1036,10 @@ function Messenger({ account, onSignOut, onUpdateContact, onSendRequest, onAppro
                 <input ref={documentInputRef} hidden type="file" accept=".pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.txt,.csv,.rtf,.zip,.pages,.numbers,.key,application/pdf,text/plain,text/csv,application/zip" onChange={(event) => { void sendFile(event, "document"); }} />
                 {attachmentMenuOpen && <div className="attachment-menu" role="menu"><button type="button" role="menuitem" onClick={() => photoInputRef.current?.click()}><i>▧</i><span><strong>Photo</strong><small>Choose an image</small></span></button><button type="button" role="menuitem" onClick={() => videoInputRef.current?.click()}><i>▷</i><span><strong>Video</strong><small>Choose a video</small></span></button><button type="button" role="menuitem" onClick={() => documentInputRef.current?.click()}><i>≡</i><span><strong>Document</strong><small>PDF, Office, text or ZIP</small></span></button></div>}
               </div>
-              {recording ? <div className="recording-status" role="status"><i /><span><strong>Recording voice</strong><small>{Math.floor(recordingSeconds / 60)}:{String(recordingSeconds % 60).padStart(2, "0")} · tap stop to send</small></span></div> : <label><input aria-label={`Message ${selected.name}`} enterKeyHint="send" value={draft} onChange={(event) => setDraft(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.nativeEvent.isComposing) { event.preventDefault(); event.currentTarget.form?.requestSubmit(); } }} placeholder={`Message ${selected.name}`} /></label>}
+              {recording ? <div className="recording-status" role="status"><i /><span><strong>Recording voice</strong><small>{Math.floor(recordingSeconds / 60)}:{String(recordingSeconds % 60).padStart(2, "0")} · tap stop to send</small></span></div> : <label><textarea ref={composerInputRef} rows={1} aria-label={`Message ${selected.name}`} enterKeyHint="send" value={draft} onChange={(event) => { updateDraft(event.target.value); event.currentTarget.style.height = "auto"; event.currentTarget.style.height = `${Math.min(event.currentTarget.scrollHeight, 120)}px`; }} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); event.currentTarget.form?.requestSubmit(); } }} placeholder={`Message ${selected.name}`} /></label>}
               <div className="composer-tool emoji-tool">
                 <button type="button" className={`emoji-button ${emojiOpen ? "active" : ""}`} aria-label="Choose an emoji" aria-expanded={emojiOpen} onClick={() => { setEmojiOpen((value) => !value); setAttachmentMenuOpen(false); }}>☺</button>
-                {emojiOpen && <div className="emoji-picker" aria-label="Emoji picker">{emojis.map((emoji) => <button type="button" key={emoji} aria-label={`Add ${emoji}`} onClick={() => { setDraft((current) => `${current}${emoji}`); setEmojiOpen(false); }}>{emoji}</button>)}</div>}
+                {emojiOpen && <div className="emoji-picker" aria-label="Emoji picker">{emojis.map((emoji) => <button type="button" key={emoji} aria-label={`Add ${emoji}`} onClick={() => { updateDraft((current) => `${current}${emoji}`); setEmojiOpen(false); window.requestAnimationFrame(() => composerInputRef.current?.focus()); }}>{emoji}</button>)}</div>}
               </div>
               <button type="button" className={`voice-button ${recording ? "recording" : ""}`} aria-label={recording ? "Stop and send voice message" : "Record a voice message"} aria-pressed={recording} onClick={() => { void startVoiceRecording(); }}>{recording ? "■" : "⌇"}</button>
               <button type="submit" className="send-button" aria-label="Send message" disabled={recording || !draft.trim()}>↑</button>
@@ -722,6 +1053,7 @@ function Messenger({ account, onSignOut, onUpdateContact, onSendRequest, onAppro
       {noticesOpen && <div className="modal-backdrop" onMouseDown={() => setNoticesOpen(false)}><section className="glass-modal request-modal" onMouseDown={(event) => event.stopPropagation()}><div className="modal-handle" /><header><div><span className="kicker">Relationship requests</span><h2>Your inbox</h2></div><button className="close-button" onClick={() => setNoticesOpen(false)}>×</button></header>{account.requests.length > 0 ? <div className="request-stack">{account.requests.map((request) => <div className="request-card" key={request.id}><span className={`avatar ${toneFor(request.fromUsername)}`}>{initials(request.fromName)}<i className="online" /></span><div><strong>{request.fromName}</strong><p><b>@{request.fromUsername}</b> wants to add you as <b>{request.relation}</b>.</p><span className="category-chip">{request.category}</span></div><div className="request-actions"><button onClick={() => { void onDeclineRequest(request).then((error) => { if (error) setToast(error); }); }}>Decline</button><button className="dark" onClick={() => { void onApproveRequest(request).then((error) => setToast(error || `${request.fromName} is now in your circle.`)); }}>Approve</button></div></div>)}</div> : <div className="request-done request-empty"><span>◇</span><strong>No requests yet</strong><p>Requests sent to this username will appear here.</p></div>}<div className="modal-note">Relationship requests sync automatically across signed-in devices.</div></section></div>}
 
       {detailsOpen && selected && <div className="modal-backdrop" onMouseDown={() => setDetailsOpen(false)}><section className="glass-modal contact-modal" onMouseDown={(event) => event.stopPropagation()}><div className="modal-handle" /><header><div><span className="kicker">Conversation details</span><h2>{selected.name}</h2></div><button className="close-button" onClick={() => setDetailsOpen(false)}>×</button></header><div className="contact-profile"><span className={`avatar contact-avatar ${selected.tone}`}>{initials(selected.name)}<i className={selected.online ? "online" : "offline"} /></span><strong>{selected.name}</strong><small>@{selected.username}</small></div><div className="contact-settings"><div><span>Relationship</span><strong>{selected.relation}</strong></div><div><span>Circle</span><strong>{selected.category}</strong></div><button onClick={() => { setDetailsOpen(false); toggleLocation(selected); }}><span>Location sharing</span><strong>{selected.locationShared ? selected.parentalControl ? "On · Parental control" : "On" : "Off"} <i>›</i></strong></button></div><button className="danger-button" disabled={selected.contactRemovalLocked} onClick={() => { if (selected.contactRemovalLocked) return; setDetailsOpen(false); setRemoveTarget(selected); }}><span>{selected.contactRemovalLocked ? "◇" : "−"}</span><div><strong>{selected.contactRemovalLocked ? "Contact protected" : "Remove from circle"}</strong><small>{selected.contactRemovalLocked ? "Parental control prevents either person from deleting this contact" : "Ends chat access and location sharing"}</small></div><b>{selected.contactRemovalLocked ? "Locked" : "›"}</b></button></section></div>}
+      {deleteTarget && <div className="modal-backdrop" onMouseDown={() => setDeleteTarget(null)}><section className="glass-modal safety-modal remove-modal" role="alertdialog" aria-modal="true" aria-labelledby="remove-message-title" onMouseDown={(event) => event.stopPropagation()}><div className="safety-icon remove-icon">⊘</div><span className="kicker">Remove message</span><h2 id="remove-message-title">Remove for everyone?</h2><p>The message content will disappear from both sides of this conversation. This cannot be undone.</p><div className="remove-actions"><button className="secondary-button" onClick={() => setDeleteTarget(null)}>Keep message</button><button className="danger-confirm" onClick={() => { void deleteMessage(deleteTarget); }}>Remove message</button></div></section></div>}
       {removeTarget && <div className="modal-backdrop"><section className="glass-modal safety-modal remove-modal" role="alertdialog" aria-modal="true" aria-labelledby="remove-contact-title"><div className="safety-icon remove-icon">−</div><span className="kicker">Remove contact</span><h2 id="remove-contact-title">Remove {removeTarget.name}?</h2><p>They’ll be removed from both circles, location sharing will stop, and this conversation will no longer appear.</p><div className="remove-actions"><button className="secondary-button" onClick={() => setRemoveTarget(null)}>Keep contact</button><button className="danger-confirm" onClick={() => { void removeContact(removeTarget); }}>Remove {removeTarget.name}</button></div></section></div>}
       {parentPrompt && <div className="modal-backdrop"><section className="glass-modal safety-modal"><div className="safety-icon">⌖<i /></div><span className="kicker">Family location</span><h2>Share with {parentPrompt.name}</h2><p>Would you also like to give {parentPrompt.name} parental control? With it on, your location can only be paused after they approve.</p><div className="setting-preview"><div><span>Parental control</span><small>Requires two-person approval to turn off</small></div><span className="mini-switch on"><i /></span></div><button className="primary-button" onClick={() => { updatePerson(parentPrompt.id, { locationShared: true, parentalControl: true }); setParentPrompt(null); setToast(`${parentPrompt.name} now has parental location control.`); }}>Share with parental control</button><button className="secondary-button full" onClick={() => { updatePerson(parentPrompt.id, { locationShared: true }); setParentPrompt(null); setToast(`Location shared with ${parentPrompt.name}.`); }}>Share location only</button><button className="text-button" onClick={() => setParentPrompt(null)}>Cancel</button></section></div>}
       {lockRequest && <div className="modal-backdrop"><section className="glass-modal safety-modal"><div className="safety-icon lock-icon">◇</div><span className="kicker">Two-person safety</span><h2>Ask {lockRequest.name} to pause?</h2><p>Parental control is active. {lockRequest.name} needs to approve before your location sharing can turn off.</p><div className="approval-flow"><span className="avatar you-avatar">{userInitials}</span><i /><span className={`avatar ${lockRequest.tone}`}>{initials(lockRequest.name)}</span></div><button className="primary-button" onClick={() => { setLockRequest(null); setToast(`Pause request sent to ${lockRequest.name}. Location stays on for now.`); }}>Send approval request <span>→</span></button><button className="text-button" onClick={() => setLockRequest(null)}>Keep sharing</button></section></div>}
@@ -889,6 +1221,15 @@ export default function Home() {
     }
   };
 
+  const performQuietAction = async (payload: Record<string, unknown>) => {
+    try {
+      await accountRequest("/api/actions", { method: "POST", body: JSON.stringify(payload) });
+      return null;
+    } catch (error) {
+      return error instanceof Error ? error.message : "Something went wrong. Please try again.";
+    }
+  };
+
   const authenticate = async (payload: AuthPayload) => {
     try {
       const next = await accountRequest("/api/auth", { method: "POST", body: JSON.stringify(payload) });
@@ -910,6 +1251,11 @@ export default function Home() {
   const removeContact = (username: string) => performAction({ action: "remove-contact", username });
   const updateContact = (username: string, patch: Pick<Person, "locationShared" | "parentalControl">) => performAction({ action: "update-contact", username, ...patch });
   const sendMessage = (username: string, message: OutgoingMessage) => performAction({ action: "send-message", username, ...message });
+  const markRead = (username: string) => performAction({ action: "mark-read", username });
+  const setTyping = (username: string, typing: boolean) => performQuietAction({ action: "typing", username, typing });
+  const reactMessage = (messageId: number, emoji: string) => performAction({ action: "react-message", messageId, emoji });
+  const editMessage = (messageId: number, text: string) => performAction({ action: "edit-message", messageId, text });
+  const deleteMessage = (messageId: number) => performAction({ action: "delete-message", messageId });
 
   const signOut = async () => {
     try {
@@ -924,5 +1270,5 @@ export default function Home() {
   if (screen === "welcome") return <><Welcome onScreen={setScreen} />{locationDialog}</>;
   if (screen === "signup" || screen === "signin") return <><AuthForm mode={screen} onBack={() => setScreen("welcome")} onAuthenticate={authenticate} onSwitch={() => setScreen(screen === "signup" ? "signin" : "signup")} />{locationDialog}</>;
   if (!account) return <><Welcome onScreen={setScreen} />{locationDialog}</>;
-  return <><Messenger key={account.username} account={account} onSignOut={signOut} onUpdateContact={updateContact} onSendRequest={sendRequest} onApproveRequest={approveRequest} onDeclineRequest={declineRequest} onRemoveContact={removeContact} onSendMessage={sendMessage} onRequestLocation={requestLocation} />{locationDialog}</>;
+  return <><Messenger key={account.username} account={account} onSignOut={signOut} onUpdateContact={updateContact} onSendRequest={sendRequest} onApproveRequest={approveRequest} onDeclineRequest={declineRequest} onRemoveContact={removeContact} onSendMessage={sendMessage} onMarkRead={markRead} onTyping={setTyping} onReactMessage={reactMessage} onEditMessage={editMessage} onDeleteMessage={deleteMessage} onRequestLocation={requestLocation} />{locationDialog}</>;
 }
