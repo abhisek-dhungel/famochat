@@ -167,6 +167,7 @@ export async function POST(request: Request) {
       await database.batch([
         { sql: "DELETE FROM contacts WHERE (owner_id = ? AND contact_id = ?) OR (owner_id = ? AND contact_id = ?)", args: [user.id, targetId, targetId, user.id] },
         { sql: "DELETE FROM relationship_requests WHERE (from_user_id = ? AND to_user_id = ?) OR (from_user_id = ? AND to_user_id = ?)", args: [user.id, targetId, targetId, user.id] },
+        { sql: "DELETE FROM location_pause_requests WHERE (requester_id = ? AND approver_id = ?) OR (requester_id = ? AND approver_id = ?)", args: [user.id, targetId, targetId, user.id] },
         { sql: "DELETE FROM messages WHERE (sender_id = ? AND recipient_id = ?) OR (sender_id = ? AND recipient_id = ?)", args: [user.id, targetId, targetId, user.id] },
       ], "write");
     } else if (action === "update-contact") {
@@ -189,6 +190,51 @@ export async function POST(request: Request) {
         args: [locationShared, parentalControl, user.id, username],
       });
       if (result.rowsAffected !== 1) throw new HttpError(409, "The location preference could not be updated.");
+    } else if (action === "request-location-pause") {
+      const username = value(body, "username", 80).toLowerCase();
+      const targetId = await approvedContactId(database, user.id, username);
+      if (!targetId) throw new HttpError(404, "That approved contact no longer exists.");
+      const contactResult = await database.execute({
+        sql: `SELECT location_shared, parental_control FROM contacts
+          WHERE owner_id = ? AND contact_id = ? AND approved = 1 LIMIT 1`,
+        args: [user.id, targetId],
+      });
+      const contact = contactResult.rows[0];
+      if (!contact || Number(contact.location_shared) !== 1 || Number(contact.parental_control) !== 1) {
+        throw new HttpError(409, "Parental location sharing is no longer active.");
+      }
+      const result = await database.execute({
+        sql: `INSERT OR IGNORE INTO location_pause_requests
+          (id, requester_id, approver_id, created_at) VALUES (?, ?, ?, ?)`,
+        args: [crypto.randomUUID(), user.id, targetId, now],
+      });
+      if (result.rowsAffected !== 1) throw new HttpError(409, `A pause request is already waiting for @${username}.`);
+    } else if (action === "approve-location-pause") {
+      const requestId = value(body, "requestId", 100);
+      const requestResult = await database.execute({
+        sql: "SELECT requester_id FROM location_pause_requests WHERE id = ? AND approver_id = ? LIMIT 1",
+        args: [requestId, user.id],
+      });
+      const pauseRequest = requestResult.rows[0];
+      if (!pauseRequest) throw new HttpError(404, "That location pause request is no longer available.");
+      const requesterId = String(pauseRequest.requester_id);
+      const result = await database.batch([
+        {
+          sql: `UPDATE contacts SET location_shared = 0
+            WHERE owner_id = ? AND contact_id = ? AND approved = 1
+              AND parental_control = 1 AND location_shared = 1`,
+          args: [requesterId, user.id],
+        },
+        { sql: "DELETE FROM location_pause_requests WHERE id = ? AND approver_id = ?", args: [requestId, user.id] },
+      ], "write");
+      if (result[0].rowsAffected !== 1) throw new HttpError(409, "Location sharing was already changed.");
+    } else if (action === "decline-location-pause") {
+      const requestId = value(body, "requestId", 100);
+      const result = await database.execute({
+        sql: "DELETE FROM location_pause_requests WHERE id = ? AND approver_id = ?",
+        args: [requestId, user.id],
+      });
+      if (result.rowsAffected !== 1) throw new HttpError(404, "That location pause request is no longer available.");
     } else if (action === "update-live-context") {
       const latitude = typeof body.latitude === "number" ? body.latitude : Number.NaN;
       const longitude = typeof body.longitude === "number" ? body.longitude : Number.NaN;

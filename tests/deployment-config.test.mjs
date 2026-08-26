@@ -157,3 +157,22 @@ test("blocks contact deletion while parental control is active", async () => {
   assert.match(actions, /parental_control = 1/);
   assert.match(actions, /protected by parental control and cannot be deleted/);
 });
+
+test("delivers parental location pause approvals through the synchronized inbox", async () => {
+  const [database, schema, state, actions, page] = await Promise.all([
+    readFile(new URL("db/index.ts", root), "utf8"),
+    readFile(new URL("db/schema.ts", root), "utf8"),
+    readFile(new URL("lib/state.ts", root), "utf8"),
+    readFile(new URL("app/api/actions/route.ts", root), "utf8"),
+    readFile(new URL("app/page.tsx", root), "utf8"),
+  ]);
+  assert.match(database, /CREATE TABLE IF NOT EXISTS location_pause_requests/);
+  assert.match(schema, /locationPauseRequests/);
+  assert.match(state, /pauseRequests:/);
+  assert.match(state, /pauseRequestPending:/);
+  assert.match(actions, /action === "request-location-pause"/);
+  assert.match(actions, /action === "approve-location-pause"/);
+  assert.match(actions, /action === "decline-location-pause"/);
+  assert.match(page, /onSendPauseRequest\(target\.username\)/);
+  assert.match(page, /Approve pause/);
+});

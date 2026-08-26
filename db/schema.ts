@@ -60,6 +60,16 @@ export const contacts = sqliteTable("contacts", {
   index("idx_contacts_owner").on(table.ownerId),
 ]);
 
+export const locationPauseRequests = sqliteTable("location_pause_requests", {
+  id: text("id").primaryKey(),
+  requesterId: text("requester_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  approverId: text("approver_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  createdAt: integer("created_at").notNull(),
+}, (table) => [
+  uniqueIndex("location_pause_request_unique").on(table.requesterId, table.approverId),
+  index("idx_location_pause_approver_created").on(table.approverId, table.createdAt),
+]);
+
 export const messages = sqliteTable("messages", {
   id: integer("id").primaryKey({ autoIncrement: true }),
   senderId: text("sender_id").notNull().references(() => users.id, { onDelete: "cascade" }),

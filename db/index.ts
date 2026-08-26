@@ -123,6 +123,13 @@ export async function ensureSchema(): Promise<Client> {
           created_at INTEGER NOT NULL,
           PRIMARY KEY(owner_id, contact_id)
         )`,
+        `CREATE TABLE IF NOT EXISTS location_pause_requests (
+          id TEXT PRIMARY KEY NOT NULL,
+          requester_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+          approver_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+          created_at INTEGER NOT NULL,
+          UNIQUE(requester_id, approver_id)
+        )`,
         `CREATE TABLE IF NOT EXISTS messages (
           id INTEGER PRIMARY KEY AUTOINCREMENT,
           sender_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -161,6 +168,7 @@ export async function ensureSchema(): Promise<Client> {
         "CREATE INDEX IF NOT EXISTS idx_live_contexts_updated ON live_contexts(updated_at)",
         "CREATE INDEX IF NOT EXISTS idx_requests_recipient_created ON relationship_requests(to_user_id, created_at)",
         "CREATE INDEX IF NOT EXISTS idx_contacts_owner ON contacts(owner_id)",
+        "CREATE INDEX IF NOT EXISTS idx_location_pause_approver_created ON location_pause_requests(approver_id, created_at)",
         "CREATE INDEX IF NOT EXISTS idx_messages_sender_recipient_created ON messages(sender_id, recipient_id, created_at)",
         "CREATE INDEX IF NOT EXISTS idx_messages_recipient_sender_created ON messages(recipient_id, sender_id, created_at)",
         "CREATE INDEX IF NOT EXISTS idx_reactions_message ON message_reactions(message_id, created_at)",

@@ -63,6 +63,7 @@ type Person = {
   locationShared: boolean;
   liveContextShared: boolean;
   parentalControl: boolean;
+  pauseRequestPending: boolean;
   contactRemovalLocked: boolean;
   activity: string;
   speed: string;
@@ -84,6 +85,13 @@ type RelationshipRequest = {
   createdAt: number;
 };
 
+type LocationPauseRequest = {
+  id: string;
+  fromUsername: string;
+  fromName: string;
+  createdAt: number;
+};
+
 type Account = {
   name: string;
   username: string;
@@ -91,6 +99,7 @@ type Account = {
   phone: string;
   contacts: Person[];
   requests: RelationshipRequest[];
+  pauseRequests: LocationPauseRequest[];
   messages: Record<string, Message[]>;
 };
 
@@ -466,13 +475,16 @@ function AuthForm({ mode, onBack, onAuthenticate, onSwitch }: {
   );
 }
 
-function Messenger({ account, onSignOut, onUpdateContact, onSendRequest, onApproveRequest, onDeclineRequest, onRemoveContact, onSendMessage, onMarkRead, onTyping, onReactMessage, onEditMessage, onDeleteMessage, onRequestLocation }: {
+function Messenger({ account, onSignOut, onUpdateContact, onSendRequest, onApproveRequest, onDeclineRequest, onSendPauseRequest, onApprovePauseRequest, onDeclinePauseRequest, onRemoveContact, onSendMessage, onMarkRead, onTyping, onReactMessage, onEditMessage, onDeleteMessage, onRequestLocation }: {
   account: Account;
   onSignOut: () => Promise<void>;
   onUpdateContact: (username: string, patch: Pick<Person, "locationShared" | "parentalControl">) => Promise<string | null>;
   onSendRequest: (payload: AddPersonPayload) => Promise<string | null>;
   onApproveRequest: (request: RelationshipRequest) => Promise<string | null>;
   onDeclineRequest: (request: RelationshipRequest) => Promise<string | null>;
+  onSendPauseRequest: (username: string) => Promise<string | null>;
+  onApprovePauseRequest: (request: LocationPauseRequest) => Promise<string | null>;
+  onDeclinePauseRequest: (request: LocationPauseRequest) => Promise<string | null>;
   onRemoveContact: (username: string) => Promise<string | null>;
   onSendMessage: (username: string, message: OutgoingMessage) => Promise<string | null>;
   onMarkRead: (username: string) => Promise<string | null>;
@@ -504,6 +516,7 @@ function Messenger({ account, onSignOut, onUpdateContact, onSendRequest, onAppro
   const [removeTarget, setRemoveTarget] = useState<Person | null>(null);
   const [parentPrompt, setParentPrompt] = useState<Person | null>(null);
   const [lockRequest, setLockRequest] = useState<Person | null>(null);
+  const [pauseRequestBusy, setPauseRequestBusy] = useState(false);
   const [toast, setToast] = useState("");
   const [attachmentMenuOpen, setAttachmentMenuOpen] = useState(false);
   const [emojiOpen, setEmojiOpen] = useState(false);
@@ -550,6 +563,7 @@ function Messenger({ account, onSignOut, onUpdateContact, onSendRequest, onAppro
   const lastDisplayedMessageFrom = displayedMessages.at(-1)?.from;
   const filteredPeople = people.filter((person) => `${person.name} ${person.relation} ${person.username}`.toLowerCase().includes(search.toLowerCase()));
   const userInitials = initials(account.name);
+  const inboxCount = account.requests.length + account.pauseRequests.length;
 
   useEffect(() => {
     if (!toast) return;
@@ -655,10 +669,22 @@ function Messenger({ account, onSignOut, onUpdateContact, onSendRequest, onAppro
 
   const toggleLocation = async (person: Person) => {
     if (!person.approved) return;
-    if (person.locationShared && person.parentalControl) { setLockRequest(person); return; }
+    if (person.locationShared && person.parentalControl) {
+      if (person.pauseRequestPending) {
+        setToast(`Your pause request is waiting for ${person.name}.`);
+        return;
+      }
+      setLockRequest(person);
+      return;
+    }
     if (!person.locationShared) {
       const allowed = await onRequestLocation();
       if (!allowed) { setToast("Allow location access before turning on sharing."); return; }
+    }
+    if (!person.locationShared && person.parentalControl) {
+      updatePerson(person.id, { locationShared: true });
+      setToast(`Protected location sharing resumed with ${person.name}.`);
+      return;
     }
     if (!person.locationShared && person.category === "Family") { setParentPrompt(person); return; }
     updatePerson(person.id, { locationShared: !person.locationShared });
@@ -983,16 +1009,16 @@ function Messenger({ account, onSignOut, onUpdateContact, onSendRequest, onAppro
     <main className="site-shell messenger-shell">
       <div className="ambient ambient-one" /><div className="ambient ambient-two" />
       <section className={`messenger ${collapsed ? "pane-collapsed" : ""}`} aria-label="Famochat messenger">
-        <header className="window-bar"><WindowDots onMinimize={() => setCollapsed((value) => !value)} /><Brand /><div className="window-actions"><button className="notice-button" aria-label={`${account.requests.length} relationship requests`} onClick={() => { setNoticesOpen(true); setProfileOpen(false); }}>◇{account.requests.length > 0 && <i />}</button><button className="profile-button" aria-label="Open account menu" aria-expanded={profileOpen} onClick={() => setProfileOpen((value) => !value)}>{userInitials}</button>{profileOpen && <div className="profile-menu"><div><strong>{account.name}</strong><small>@{account.username}</small></div><button onClick={() => { setNoticesOpen(true); setProfileOpen(false); }}>Relationship requests <span>{account.requests.length}</span></button><button onClick={() => { void onSignOut(); }}>Sign out <span>↗</span></button></div>}</div></header>
+        <header className="window-bar"><WindowDots onMinimize={() => setCollapsed((value) => !value)} /><Brand /><div className="window-actions"><button className="notice-button" aria-label={`${inboxCount} requests`} onClick={() => { setNoticesOpen(true); setProfileOpen(false); }}>◇{inboxCount > 0 && <i />}</button><button className="profile-button" aria-label="Open account menu" aria-expanded={profileOpen} onClick={() => setProfileOpen((value) => !value)}>{userInitials}</button>{profileOpen && <div className="profile-menu"><div><strong>{account.name}</strong><small>@{account.username}</small></div><button onClick={() => { setNoticesOpen(true); setProfileOpen(false); }}>Requests <span>{inboxCount}</span></button><button onClick={() => { void onSignOut(); }}>Sign out <span>↗</span></button></div>}</div></header>
         <div className={`workspace ${mobileList ? "mobile-list" : ""}`}>
           <aside className="people-pane">
-            <div className="pane-heading"><div className="pane-title"><span className="eyebrow">Your circle</span><h1>People</h1></div><div className="pane-tools"><button className="mobile-notice" aria-label={`${account.requests.length} requests`} onClick={() => setNoticesOpen(true)}>◇{account.requests.length > 0 && <i />}</button><button className="add-button" onClick={() => setAddOpen(true)} aria-label="Add a person">+</button></div></div>
+            <div className="pane-heading"><div className="pane-title"><span className="eyebrow">Your circle</span><h1>People</h1></div><div className="pane-tools"><button className="mobile-notice" aria-label={`${inboxCount} requests`} onClick={() => setNoticesOpen(true)}>◇{inboxCount > 0 && <i />}</button><button className="add-button" onClick={() => setAddOpen(true)} aria-label="Add a person">+</button></div></div>
             <label className="search-field"><span aria-hidden="true">⌕</span><input aria-label="Search people" value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search your circle" /></label>
             <div className="people-list">
               {filteredPeople.map((person) => <div className={`person-row ${selected?.id === person.id ? "active" : ""} ${!person.approved ? "pending" : ""}`} key={person.id}><button className="person-main" onClick={() => choosePerson(person)} aria-label={`Open chat with ${person.name}`}><span className={`avatar ${person.tone}`}>{initials(person.name)}<i className={person.online ? "online" : "offline"} /></span><span className="person-copy"><span className="person-name-line"><strong>{person.name}</strong><time>{formatConversationTime(person.lastMessageAt)}</time></span><span className="person-preview-line"><small className={person.typing ? "typing-copy" : ""}>{!person.approved ? "Approval pending" : person.typing ? "typing…" : person.lastMessagePreview || person.relation}</small>{person.unreadCount > 0 && <b className="unread-badge" aria-label={`${person.unreadCount} unread messages`}>{person.unreadCount > 99 ? "99+" : person.unreadCount}</b>}</span></span></button><button className={`share-toggle ${person.locationShared ? "on" : ""} ${person.parentalControl ? "locked" : ""}`} onClick={() => toggleLocation(person)} aria-label={`${person.locationShared ? "Stop" : "Start"} sharing location with ${person.name}`} aria-pressed={person.locationShared} disabled={!person.approved}><span>{person.parentalControl ? "•" : ""}</span></button></div>)}
               {filteredPeople.length === 0 && <div className="empty-list">{people.length === 0 ? "No contacts yet. Add another Famochat account to begin." : "No one in your circle matches that search."}</div>}
             </div>
-            <div className="pane-footer"><button className="you-card" aria-label="Open your account menu" aria-expanded={accountMenuOpen} onClick={() => setAccountMenuOpen((value) => !value)}><span className="avatar you-avatar">{userInitials}<i className="online" /></span><span><strong>{account.name}</strong><small>@{account.username}</small></span><b>•••</b></button>{accountMenuOpen && <div className="profile-menu sidebar-profile-menu"><div><strong>{account.name}</strong><small>@{account.username}</small></div><button onClick={() => { setNoticesOpen(true); setAccountMenuOpen(false); }}>Relationship requests <span>{account.requests.length}</span></button><button onClick={() => { void onSignOut(); }}>Log out <span>↗</span></button></div>}<div className="secure-note"><span>◈</span><p><strong>Your circle stays yours.</strong><br />Encrypted in transit</p></div></div>
+            <div className="pane-footer"><button className="you-card" aria-label="Open your account menu" aria-expanded={accountMenuOpen} onClick={() => setAccountMenuOpen((value) => !value)}><span className="avatar you-avatar">{userInitials}<i className="online" /></span><span><strong>{account.name}</strong><small>@{account.username}</small></span><b>•••</b></button>{accountMenuOpen && <div className="profile-menu sidebar-profile-menu"><div><strong>{account.name}</strong><small>@{account.username}</small></div><button onClick={() => { setNoticesOpen(true); setAccountMenuOpen(false); }}>Requests <span>{inboxCount}</span></button><button onClick={() => { void onSignOut(); }}>Log out <span>↗</span></button></div>}<div className="secure-note"><span>◈</span><p><strong>Your circle stays yours.</strong><br />Encrypted in transit</p></div></div>
           </aside>
           <section className="chat-pane">
             {selected ? <><div className="chat-topbar"><button className="mobile-back" onClick={() => { stopTyping(); setMobileList(true); }} aria-label="Back to people">‹</button><button className="desktop-collapse" onClick={() => setCollapsed((value) => !value)} aria-label="Toggle people panel">◫</button><span className={`avatar compact ${selected.tone}`}>{initials(selected.name)}<i className={selected.online ? "online" : "offline"} /></span><div className="chat-title"><strong>{selected.name}</strong><small className={selected.typing ? "typing-copy" : ""}>{selected.typing ? "typing…" : selected.activity}</small></div><button className={`circle-action ${conversationSearchOpen ? "active" : ""}`} aria-label={`Search conversation with ${selected.name}`} aria-pressed={conversationSearchOpen} onClick={() => { setConversationSearchOpen((value) => !value); setConversationSearch(""); }}>⌕</button><button className="circle-action" aria-label="Conversation details" onClick={() => setDetailsOpen(true)}>•••</button></div>
@@ -1050,13 +1076,16 @@ function Messenger({ account, onSignOut, onUpdateContact, onSendRequest, onAppro
 
       {addOpen && <AddPersonModal onClose={() => setAddOpen(false)} onAdd={async (payload) => { const error = await onSendRequest(payload); if (!error) { setAddOpen(false); setToast(`Request sent to @${payload.username}.`); } return error; }} />}
 
-      {noticesOpen && <div className="modal-backdrop" onMouseDown={() => setNoticesOpen(false)}><section className="glass-modal request-modal" onMouseDown={(event) => event.stopPropagation()}><div className="modal-handle" /><header><div><span className="kicker">Relationship requests</span><h2>Your inbox</h2></div><button className="close-button" onClick={() => setNoticesOpen(false)}>×</button></header>{account.requests.length > 0 ? <div className="request-stack">{account.requests.map((request) => <div className="request-card" key={request.id}><span className={`avatar ${toneFor(request.fromUsername)}`}>{initials(request.fromName)}<i className="online" /></span><div><strong>{request.fromName}</strong><p><b>@{request.fromUsername}</b> wants to add you as <b>{request.relation}</b>.</p><span className="category-chip">{request.category}</span></div><div className="request-actions"><button onClick={() => { void onDeclineRequest(request).then((error) => { if (error) setToast(error); }); }}>Decline</button><button className="dark" onClick={() => { void onApproveRequest(request).then((error) => setToast(error || `${request.fromName} is now in your circle.`)); }}>Approve</button></div></div>)}</div> : <div className="request-done request-empty"><span>◇</span><strong>No requests yet</strong><p>Requests sent to this username will appear here.</p></div>}<div className="modal-note">Relationship requests sync automatically across signed-in devices.</div></section></div>}
+      {noticesOpen && <div className="modal-backdrop" onMouseDown={() => setNoticesOpen(false)}><section className="glass-modal request-modal" onMouseDown={(event) => event.stopPropagation()}><div className="modal-handle" /><header><div><span className="kicker">Approvals and relationships</span><h2>Your inbox</h2></div><button className="close-button" onClick={() => setNoticesOpen(false)}>×</button></header>{inboxCount > 0 ? <div className="request-stack">
+        {account.pauseRequests.map((request) => <div className="request-card pause-request-card" key={request.id}><span className={`avatar ${toneFor(request.fromUsername)}`}>{initials(request.fromName)}<i className="online" /></span><div><strong>{request.fromName}</strong><p><b>@{request.fromUsername}</b> is asking for approval to pause their protected location sharing.</p><span className="category-chip">Location pause</span></div><div className="request-actions"><button onClick={() => { void onDeclinePauseRequest(request).then((error) => setToast(error || `${request.fromName} will keep sharing their location.`)); }}>Keep sharing</button><button className="dark" onClick={() => { void onApprovePauseRequest(request).then((error) => setToast(error || `${request.fromName}’s location sharing is now paused.`)); }}>Approve pause</button></div></div>)}
+        {account.requests.map((request) => <div className="request-card" key={request.id}><span className={`avatar ${toneFor(request.fromUsername)}`}>{initials(request.fromName)}<i className="online" /></span><div><strong>{request.fromName}</strong><p><b>@{request.fromUsername}</b> wants to add you as <b>{request.relation}</b>.</p><span className="category-chip">{request.category}</span></div><div className="request-actions"><button onClick={() => { void onDeclineRequest(request).then((error) => { if (error) setToast(error); }); }}>Decline</button><button className="dark" onClick={() => { void onApproveRequest(request).then((error) => setToast(error || `${request.fromName} is now in your circle.`)); }}>Approve</button></div></div>)}
+      </div> : <div className="request-done request-empty"><span>◇</span><strong>No requests yet</strong><p>Relationship and location approvals will appear here.</p></div>}<div className="modal-note">Requests sync automatically across signed-in devices.</div></section></div>}
 
       {detailsOpen && selected && <div className="modal-backdrop" onMouseDown={() => setDetailsOpen(false)}><section className="glass-modal contact-modal" onMouseDown={(event) => event.stopPropagation()}><div className="modal-handle" /><header><div><span className="kicker">Conversation details</span><h2>{selected.name}</h2></div><button className="close-button" onClick={() => setDetailsOpen(false)}>×</button></header><div className="contact-profile"><span className={`avatar contact-avatar ${selected.tone}`}>{initials(selected.name)}<i className={selected.online ? "online" : "offline"} /></span><strong>{selected.name}</strong><small>@{selected.username}</small></div><div className="contact-settings"><div><span>Relationship</span><strong>{selected.relation}</strong></div><div><span>Circle</span><strong>{selected.category}</strong></div><button onClick={() => { setDetailsOpen(false); toggleLocation(selected); }}><span>Location sharing</span><strong>{selected.locationShared ? selected.parentalControl ? "On · Parental control" : "On" : "Off"} <i>›</i></strong></button></div><button className="danger-button" disabled={selected.contactRemovalLocked} onClick={() => { if (selected.contactRemovalLocked) return; setDetailsOpen(false); setRemoveTarget(selected); }}><span>{selected.contactRemovalLocked ? "◇" : "−"}</span><div><strong>{selected.contactRemovalLocked ? "Contact protected" : "Remove from circle"}</strong><small>{selected.contactRemovalLocked ? "Parental control prevents either person from deleting this contact" : "Ends chat access and location sharing"}</small></div><b>{selected.contactRemovalLocked ? "Locked" : "›"}</b></button></section></div>}
       {deleteTarget && <div className="modal-backdrop" onMouseDown={() => setDeleteTarget(null)}><section className="glass-modal safety-modal remove-modal" role="alertdialog" aria-modal="true" aria-labelledby="remove-message-title" onMouseDown={(event) => event.stopPropagation()}><div className="safety-icon remove-icon">⊘</div><span className="kicker">Remove message</span><h2 id="remove-message-title">Remove for everyone?</h2><p>The message content will disappear from both sides of this conversation. This cannot be undone.</p><div className="remove-actions"><button className="secondary-button" onClick={() => setDeleteTarget(null)}>Keep message</button><button className="danger-confirm" onClick={() => { void deleteMessage(deleteTarget); }}>Remove message</button></div></section></div>}
       {removeTarget && <div className="modal-backdrop"><section className="glass-modal safety-modal remove-modal" role="alertdialog" aria-modal="true" aria-labelledby="remove-contact-title"><div className="safety-icon remove-icon">−</div><span className="kicker">Remove contact</span><h2 id="remove-contact-title">Remove {removeTarget.name}?</h2><p>They’ll be removed from both circles, location sharing will stop, and this conversation will no longer appear.</p><div className="remove-actions"><button className="secondary-button" onClick={() => setRemoveTarget(null)}>Keep contact</button><button className="danger-confirm" onClick={() => { void removeContact(removeTarget); }}>Remove {removeTarget.name}</button></div></section></div>}
       {parentPrompt && <div className="modal-backdrop"><section className="glass-modal safety-modal"><div className="safety-icon">⌖<i /></div><span className="kicker">Family location</span><h2>Share with {parentPrompt.name}</h2><p>Would you also like to give {parentPrompt.name} parental control? With it on, your location can only be paused after they approve.</p><div className="setting-preview"><div><span>Parental control</span><small>Requires two-person approval to turn off</small></div><span className="mini-switch on"><i /></span></div><button className="primary-button" onClick={() => { updatePerson(parentPrompt.id, { locationShared: true, parentalControl: true }); setParentPrompt(null); setToast(`${parentPrompt.name} now has parental location control.`); }}>Share with parental control</button><button className="secondary-button full" onClick={() => { updatePerson(parentPrompt.id, { locationShared: true }); setParentPrompt(null); setToast(`Location shared with ${parentPrompt.name}.`); }}>Share location only</button><button className="text-button" onClick={() => setParentPrompt(null)}>Cancel</button></section></div>}
-      {lockRequest && <div className="modal-backdrop"><section className="glass-modal safety-modal"><div className="safety-icon lock-icon">◇</div><span className="kicker">Two-person safety</span><h2>Ask {lockRequest.name} to pause?</h2><p>Parental control is active. {lockRequest.name} needs to approve before your location sharing can turn off.</p><div className="approval-flow"><span className="avatar you-avatar">{userInitials}</span><i /><span className={`avatar ${lockRequest.tone}`}>{initials(lockRequest.name)}</span></div><button className="primary-button" onClick={() => { setLockRequest(null); setToast(`Pause request sent to ${lockRequest.name}. Location stays on for now.`); }}>Send approval request <span>→</span></button><button className="text-button" onClick={() => setLockRequest(null)}>Keep sharing</button></section></div>}
+      {lockRequest && <div className="modal-backdrop"><section className="glass-modal safety-modal"><div className="safety-icon lock-icon">◇</div><span className="kicker">Two-person safety</span><h2>Ask {lockRequest.name} to pause?</h2><p>Parental control is active. {lockRequest.name} needs to approve before your location sharing can turn off.</p><div className="approval-flow"><span className="avatar you-avatar">{userInitials}</span><i /><span className={`avatar ${lockRequest.tone}`}>{initials(lockRequest.name)}</span></div><button className="primary-button" disabled={pauseRequestBusy} onClick={() => { const target = lockRequest; setPauseRequestBusy(true); void onSendPauseRequest(target.username).then((error) => { setPauseRequestBusy(false); if (error) { setToast(error); return; } setLockRequest(null); setToast(`Pause request sent to ${target.name}. It is now in their inbox.`); }); }}>{pauseRequestBusy ? "Sending request…" : "Send approval request"} <span>→</span></button><button className="text-button" disabled={pauseRequestBusy} onClick={() => setLockRequest(null)}>Keep sharing</button></section></div>}
       {previewMessage && <div className="media-lightbox" role="dialog" aria-modal="true" aria-label="Photo preview" onMouseDown={() => setPreviewMessage(null)}><button className="media-lightbox-close" aria-label="Close photo preview" onClick={() => setPreviewMessage(null)}>×</button><button className="media-lightbox-zoom" aria-label={previewZoomed ? "Fit photo to screen" : "Zoom photo to two times size"} onMouseDown={(event) => event.stopPropagation()} onClick={() => setPreviewZoomed((value) => !value)}>{previewZoomed ? "Fit" : "Zoom 2×"}</button><div className={`media-lightbox-content ${previewZoomed ? "zoomed" : ""}`} onMouseDown={(event) => event.stopPropagation()}><button type="button" className="media-lightbox-image" aria-label={previewZoomed ? "Fit photo to screen" : "Zoom photo to two times size"} onClick={() => setPreviewZoomed((value) => !value)}><MediaMessage message={previewMessage} /></button><span>{previewMessage.fileName || "Shared photo"} · {previewZoomed ? "Drag to explore · tap to fit" : "Tap to zoom"}</span></div></div>}
       {toast && <div className="toast" role="status"><span>✓</span>{toast}</div>}
     </main>
@@ -1248,6 +1277,12 @@ export default function Home() {
 
   const declineRequest = (request: RelationshipRequest) => performAction({ action: "decline-request", requestId: request.id });
 
+  const sendPauseRequest = (username: string) => performAction({ action: "request-location-pause", username });
+
+  const approvePauseRequest = (request: LocationPauseRequest) => performAction({ action: "approve-location-pause", requestId: request.id });
+
+  const declinePauseRequest = (request: LocationPauseRequest) => performAction({ action: "decline-location-pause", requestId: request.id });
+
   const removeContact = (username: string) => performAction({ action: "remove-contact", username });
   const updateContact = (username: string, patch: Pick<Person, "locationShared" | "parentalControl">) => performAction({ action: "update-contact", username, ...patch });
   const sendMessage = (username: string, message: OutgoingMessage) => performAction({ action: "send-message", username, ...message });
@@ -1270,5 +1305,5 @@ export default function Home() {
   if (screen === "welcome") return <><Welcome onScreen={setScreen} />{locationDialog}</>;
   if (screen === "signup" || screen === "signin") return <><AuthForm mode={screen} onBack={() => setScreen("welcome")} onAuthenticate={authenticate} onSwitch={() => setScreen(screen === "signup" ? "signin" : "signup")} />{locationDialog}</>;
   if (!account) return <><Welcome onScreen={setScreen} />{locationDialog}</>;
-  return <><Messenger key={account.username} account={account} onSignOut={signOut} onUpdateContact={updateContact} onSendRequest={sendRequest} onApproveRequest={approveRequest} onDeclineRequest={declineRequest} onRemoveContact={removeContact} onSendMessage={sendMessage} onMarkRead={markRead} onTyping={setTyping} onReactMessage={reactMessage} onEditMessage={editMessage} onDeleteMessage={deleteMessage} onRequestLocation={requestLocation} />{locationDialog}</>;
+  return <><Messenger key={account.username} account={account} onSignOut={signOut} onUpdateContact={updateContact} onSendRequest={sendRequest} onApproveRequest={approveRequest} onDeclineRequest={declineRequest} onSendPauseRequest={sendPauseRequest} onApprovePauseRequest={approvePauseRequest} onDeclinePauseRequest={declinePauseRequest} onRemoveContact={removeContact} onSendMessage={sendMessage} onMarkRead={markRead} onTyping={setTyping} onReactMessage={reactMessage} onEditMessage={editMessage} onDeleteMessage={deleteMessage} onRequestLocation={requestLocation} />{locationDialog}</>;
 }

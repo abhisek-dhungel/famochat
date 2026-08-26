@@ -363,6 +363,8 @@ button:disabled { cursor: not-allowed; opacity: .45; }
 .circle-picker b { font-size: 11px; }
 .picker-help { margin: -10px 0 -2px; color: var(--muted); font-size: 8px; }
 .request-card { display: grid; grid-template-columns: auto 1fr; gap: 12px; padding: 16px; border: 1px solid white; border-radius: 20px; background: rgba(255,255,255,.66); box-shadow: 0 8px 25px rgba(0,0,0,.06); }
+.pause-request-card { border-color: rgba(12, 12, 12, .12); background: linear-gradient(135deg, rgba(255,255,255,.88), rgba(239,239,235,.8)); }
+.pause-request-card .category-chip { background: #111; color: white; }
 .request-stack { display: grid; gap: 9px; max-height: 410px; overflow-y: auto; }
 .request-card > div:nth-child(2) strong { font-size: 12px; }
 .request-card p { margin: 5px 0 8px; color: var(--muted); font-size: 10px; line-height: 1.45; }
@@ -371,6 +373,7 @@ button:disabled { cursor: not-allowed; opacity: .45; }
 .request-actions { grid-column: 1 / -1; display: grid; grid-template-columns: 1fr 1fr; gap: 7px; margin-top: 3px; }
 .request-actions button { height: 39px; border: 1px solid var(--line); border-radius: 12px; background: #eee; font-size: 9px; font-weight: 700; cursor: pointer; }
 .request-actions button.dark { border: 0; background: #111; color: white; }
+.request-actions button:disabled, .safety-modal button:disabled { cursor: wait; opacity: .58; }
 .modal-note { margin-top: 15px; padding: 12px; border-radius: 13px; background: rgba(0,0,0,.035); color: var(--muted); font-size: 8px; line-height: 1.5; text-align: center; }
 .request-done { display: grid; place-items: center; text-align: center; padding: 30px 16px; }
 .request-done > span { width: 48px; height: 48px; display: grid; place-items: center; margin-bottom: 14px; border-radius: 50%; background: #111; color: white; }

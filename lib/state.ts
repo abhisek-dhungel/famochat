@@ -45,10 +45,14 @@ export async function getAccountState(user: SessionUser) {
     args: [now, user.id, now - 15_000],
   });
 
-  const [contactsResult, requestsResult, messagesResult, reactionsResult] = await Promise.all([
+  const [contactsResult, requestsResult, pauseRequestsResult, messagesResult, reactionsResult] = await Promise.all([
     database.execute({
       sql: `SELECT u.username, u.name, c.relation, c.category, c.approved,
           c.location_shared, c.parental_control,
+          EXISTS(
+            SELECT 1 FROM location_pause_requests pause
+            WHERE pause.requester_id = c.owner_id AND pause.approver_id = c.contact_id
+          ) AS pause_request_pending,
           u.last_seen_at,
           EXISTS(
             SELECT 1 FROM typing_indicators typing
@@ -77,6 +81,15 @@ export async function getAccountState(user: SessionUser) {
         JOIN users u ON u.id = r.from_user_id
         WHERE r.to_user_id = ?
         ORDER BY r.created_at DESC`,
+      args: [user.id],
+    }),
+    database.execute({
+      sql: `SELECT pause.id, requester.username AS from_username,
+          requester.name AS from_name, pause.created_at
+        FROM location_pause_requests pause
+        JOIN users requester ON requester.id = pause.requester_id
+        WHERE pause.approver_id = ?
+        ORDER BY pause.created_at DESC`,
       args: [user.id],
     }),
     database.execute({
@@ -134,6 +147,7 @@ export async function getAccountState(user: SessionUser) {
       locationShared: Number(row.location_shared) === 1,
       liveContextShared,
       parentalControl: Number(row.parental_control) === 1,
+      pauseRequestPending: Number(row.pause_request_pending) === 1,
       contactRemovalLocked: Number(row.parental_control) === 1 || Number(row.reverse_parental_control) === 1,
       activity: approved ? online ? "Online" : lastSeenLabel(lastSeenAt, now) : "Pending",
       speed: liveContextShared ? "Live" : "—",
@@ -192,6 +206,12 @@ export async function getAccountState(user: SessionUser) {
       fromName: String(row.from_name),
       relation: String(row.relation),
       category: String(row.category),
+      createdAt: Number(row.created_at),
+    })),
+    pauseRequests: pauseRequestsResult.rows.map((row) => ({
+      id: String(row.id),
+      fromUsername: String(row.from_username),
+      fromName: String(row.from_name),
       createdAt: Number(row.created_at),
     })),
     messages,
