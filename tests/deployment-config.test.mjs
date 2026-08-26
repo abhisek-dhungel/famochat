@@ -148,6 +148,20 @@ test("persists live context only for contacts it is shared with", async () => {
   assert.match(actions, /action === "update-live-context"/);
 });
 
+test("opens a contact's shared coordinates as a live map from the chat header", async () => {
+  const [state, page, css] = await Promise.all([
+    readFile(new URL("lib/state.ts", root), "utf8"),
+    readFile(new URL("app/page.tsx", root), "utf8"),
+    readFile(new URL("app/globals.css", root), "utf8"),
+  ]);
+  assert.match(state, /latitude,\s*\n\s*longitude,/);
+  assert.match(page, /className=\{`circle-action live-location-action/);
+  assert.match(page, /setLiveLocationOpen\(true\)/);
+  assert.match(page, /openstreetmap\.org\/export\/embed\.html/);
+  assert.match(page, /title=\{`\$\{selected\.name\}’s live location map`\}/);
+  assert.match(css, /\.live-location-map-shell iframe/);
+});
+
 test("blocks contact deletion while parental control is active", async () => {
   const [page, actions] = await Promise.all([
     readFile(new URL("app/page.tsx", root), "utf8"),

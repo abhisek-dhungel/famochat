@@ -67,6 +67,8 @@ type Person = {
   contactRemovalLocked: boolean;
   activity: string;
   speed: string;
+  latitude: number | null;
+  longitude: number | null;
   location: string;
   eta: string;
   temperature: string;
@@ -193,6 +195,28 @@ function initials(name: string) {
 function toneFor(value: string) {
   const total = [...value].reduce((sum, character) => sum + character.charCodeAt(0), 0);
   return tones[total % tones.length];
+}
+
+function liveLocationUrls(person: Pick<Person, "latitude" | "longitude">) {
+  if (person.latitude == null || person.longitude == null) return null;
+  const latitude = Math.max(-90, Math.min(90, person.latitude));
+  const longitude = Math.max(-180, Math.min(180, person.longitude));
+  const latitudeDelta = 0.006;
+  const longitudeDelta = 0.009;
+  const embed = new URL("https://www.openstreetmap.org/export/embed.html");
+  embed.searchParams.set("bbox", [
+    Math.max(-180, longitude - longitudeDelta),
+    Math.max(-90, latitude - latitudeDelta),
+    Math.min(180, longitude + longitudeDelta),
+    Math.min(90, latitude + latitudeDelta),
+  ].join(","));
+  embed.searchParams.set("layer", "mapnik");
+  embed.searchParams.set("marker", `${latitude},${longitude}`);
+
+  return {
+    embed: embed.toString(),
+    external: `https://www.openstreetmap.org/?mlat=${latitude}&mlon=${longitude}#map=17/${latitude}/${longitude}`,
+  };
 }
 
 function formatMessageTime(value: number) {
@@ -506,6 +530,7 @@ function Messenger({ account, onSignOut, onUpdateContact, onSendRequest, onAppro
   const [profileOpen, setProfileOpen] = useState(false);
   const [accountMenuOpen, setAccountMenuOpen] = useState(false);
   const [detailsOpen, setDetailsOpen] = useState(false);
+  const [liveLocationOpen, setLiveLocationOpen] = useState(false);
   const [conversationSearchOpen, setConversationSearchOpen] = useState(false);
   const [conversationSearch, setConversationSearch] = useState("");
   const [replyingTo, setReplyingTo] = useState<Message | null>(null);
@@ -564,6 +589,7 @@ function Messenger({ account, onSignOut, onUpdateContact, onSendRequest, onAppro
   const filteredPeople = people.filter((person) => `${person.name} ${person.relation} ${person.username}`.toLowerCase().includes(search.toLowerCase()));
   const userInitials = initials(account.name);
   const inboxCount = account.requests.length + account.pauseRequests.length;
+  const selectedLocationUrls = selected ? liveLocationUrls(selected) : null;
 
   useEffect(() => {
     if (!toast) return;
@@ -612,11 +638,21 @@ function Messenger({ account, onSignOut, onUpdateContact, onSendRequest, onAppro
   }, []);
 
   useEffect(() => {
-    if (!previewMessage) return;
-    const closeOnEscape = (event: KeyboardEvent) => { if (event.key === "Escape") setPreviewMessage(null); };
+    if (!previewMessage && !liveLocationOpen) return;
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      setPreviewMessage(null);
+      setLiveLocationOpen(false);
+    };
     window.addEventListener("keydown", closeOnEscape);
     return () => window.removeEventListener("keydown", closeOnEscape);
-  }, [previewMessage]);
+  }, [liveLocationOpen, previewMessage]);
+
+  useEffect(() => {
+    if (!liveLocationOpen || selected?.liveContextShared) return;
+    const frame = window.requestAnimationFrame(() => setLiveLocationOpen(false));
+    return () => window.cancelAnimationFrame(frame);
+  }, [liveLocationOpen, selected?.liveContextShared]);
 
   const updatePerson = (id: string, patch: Partial<Person>) => {
     const person = people.find((item) => item.id === id);
@@ -661,6 +697,7 @@ function Messenger({ account, onSignOut, onUpdateContact, onSendRequest, onAppro
     setActionMessageId(null);
     setConversationSearch("");
     setConversationSearchOpen(false);
+    setLiveLocationOpen(false);
     stickToBottomRef.current = true;
     setSelectedId(person.id);
     setMobileList(false);
@@ -1021,9 +1058,9 @@ function Messenger({ account, onSignOut, onUpdateContact, onSendRequest, onAppro
             <div className="pane-footer"><button className="you-card" aria-label="Open your account menu" aria-expanded={accountMenuOpen} onClick={() => setAccountMenuOpen((value) => !value)}><span className="avatar you-avatar">{userInitials}<i className="online" /></span><span><strong>{account.name}</strong><small>@{account.username}</small></span><b>•••</b></button>{accountMenuOpen && <div className="profile-menu sidebar-profile-menu"><div><strong>{account.name}</strong><small>@{account.username}</small></div><button onClick={() => { setNoticesOpen(true); setAccountMenuOpen(false); }}>Requests <span>{inboxCount}</span></button><button onClick={() => { void onSignOut(); }}>Log out <span>↗</span></button></div>}<div className="secure-note"><span>◈</span><p><strong>Your circle stays yours.</strong><br />Encrypted in transit</p></div></div>
           </aside>
           <section className="chat-pane">
-            {selected ? <><div className="chat-topbar"><button className="mobile-back" onClick={() => { stopTyping(); setMobileList(true); }} aria-label="Back to people">‹</button><button className="desktop-collapse" onClick={() => setCollapsed((value) => !value)} aria-label="Toggle people panel">◫</button><span className={`avatar compact ${selected.tone}`}>{initials(selected.name)}<i className={selected.online ? "online" : "offline"} /></span><div className="chat-title"><strong>{selected.name}</strong><small className={selected.typing ? "typing-copy" : ""}>{selected.typing ? "typing…" : selected.activity}</small></div><button className={`circle-action ${conversationSearchOpen ? "active" : ""}`} aria-label={`Search conversation with ${selected.name}`} aria-pressed={conversationSearchOpen} onClick={() => { setConversationSearchOpen((value) => !value); setConversationSearch(""); }}>⌕</button><button className="circle-action" aria-label="Conversation details" onClick={() => setDetailsOpen(true)}>•••</button></div>
+            {selected ? <><div className="chat-topbar"><button className="mobile-back" onClick={() => { stopTyping(); setMobileList(true); }} aria-label="Back to people">‹</button><button className="desktop-collapse" onClick={() => setCollapsed((value) => !value)} aria-label="Toggle people panel">◫</button><span className={`avatar compact ${selected.tone}`}>{initials(selected.name)}<i className={selected.online ? "online" : "offline"} /></span><div className="chat-title"><strong>{selected.name}</strong><small className={selected.typing ? "typing-copy" : ""}>{selected.typing ? "typing…" : selected.activity}</small></div>{selected.liveContextShared && <button className={`circle-action live-location-action ${liveLocationOpen ? "active" : ""}`} aria-label={`View ${selected.name}’s live location`} aria-pressed={liveLocationOpen} onClick={() => setLiveLocationOpen(true)}><span aria-hidden="true">⌖</span><i /></button>}<button className={`circle-action ${conversationSearchOpen ? "active" : ""}`} aria-label={`Search conversation with ${selected.name}`} aria-pressed={conversationSearchOpen} onClick={() => { setConversationSearchOpen((value) => !value); setConversationSearch(""); }}>⌕</button><button className="circle-action" aria-label="Conversation details" onClick={() => setDetailsOpen(true)}>•••</button></div>
             {conversationSearchOpen && <label className="conversation-search"><span>⌕</span><input autoFocus value={conversationSearch} onChange={(event) => setConversationSearch(event.target.value)} placeholder={`Search messages with ${selected.name}`} aria-label={`Search messages with ${selected.name}`} /><button type="button" onClick={() => { setConversationSearchOpen(false); setConversationSearch(""); }} aria-label="Close conversation search">×</button></label>}
-            {selected.liveContextShared ? <div className="live-card"><div className="live-map" aria-hidden="true"><span className="road road-one" /><span className="road road-two" /><span className="map-pin"><i /></span></div><div className="live-primary"><span className="live-label"><i /> Live context</span><h2>{selected.location}</h2><p>{selected.eta}</p></div><div className="live-stats"><div><span>{selected.activity}</span><strong>{selected.speed}</strong></div><div><span>Weather</span><strong>{selected.temperature} <small>{selected.weather}</small></strong></div><div><span>Battery</span><strong>{selected.battery == null ? "—" : `${selected.battery}%`} <small>{selected.battery == null ? "Unavailable" : selected.charging ? "Charging" : selected.battery > 25 ? "Good" : "Low"}</small></strong></div></div><button className="live-more" aria-label="Open live map" onClick={() => setToast(`${selected.name} is near ${selected.location}.`)}>↗</button></div> : <div className="private-card"><span>◎</span><div><strong>{selected.name}’s live context is private</strong><p>Location, weather, and battery appear here when {selected.name} shares them with you.</p></div><button onClick={() => toggleLocation(selected)}>{selected.locationShared ? "Pause mine" : "Share mine"}</button></div>}
+            {selected.liveContextShared ? <div className="live-card"><button type="button" className="live-map" aria-label={`View ${selected.name}’s live location on a map`} onClick={() => setLiveLocationOpen(true)}><span className="road road-one" /><span className="road road-two" /><span className="map-pin"><i /></span></button><button type="button" className="live-primary live-primary-button" onClick={() => setLiveLocationOpen(true)}><span className="live-label"><i /> Live context</span><span className="live-location-name">{selected.location}</span><span className="live-location-age">{selected.eta}</span></button><div className="live-stats"><div><span>{selected.activity}</span><strong>{selected.speed}</strong></div><div><span>Weather</span><strong>{selected.temperature} <small>{selected.weather}</small></strong></div><div><span>Battery</span><strong>{selected.battery == null ? "—" : `${selected.battery}%`} <small>{selected.battery == null ? "Unavailable" : selected.charging ? "Charging" : selected.battery > 25 ? "Good" : "Low"}</small></strong></div></div><button className="live-more" aria-label={`View ${selected.name}’s live location`} onClick={() => setLiveLocationOpen(true)}>↗</button></div> : <div className="private-card"><span>◎</span><div><strong>{selected.name}’s live context is private</strong><p>Location, weather, and battery appear here when {selected.name} shares them with you.</p></div><button onClick={() => toggleLocation(selected)}>{selected.locationShared ? "Pause mine" : "Share mine"}</button></div>}
             <div className="messages" ref={messagesRef} onScroll={handleMessagesScroll} role="log" aria-live="polite" aria-relevant="additions text">
               {visibleMessages.map((message, index) => {
                 const previous = visibleMessages[index - 1];
@@ -1080,6 +1117,8 @@ function Messenger({ account, onSignOut, onUpdateContact, onSendRequest, onAppro
         {account.pauseRequests.map((request) => <div className="request-card pause-request-card" key={request.id}><span className={`avatar ${toneFor(request.fromUsername)}`}>{initials(request.fromName)}<i className="online" /></span><div><strong>{request.fromName}</strong><p><b>@{request.fromUsername}</b> is asking for approval to pause their protected location sharing.</p><span className="category-chip">Location pause</span></div><div className="request-actions"><button onClick={() => { void onDeclinePauseRequest(request).then((error) => setToast(error || `${request.fromName} will keep sharing their location.`)); }}>Keep sharing</button><button className="dark" onClick={() => { void onApprovePauseRequest(request).then((error) => setToast(error || `${request.fromName}’s location sharing is now paused.`)); }}>Approve pause</button></div></div>)}
         {account.requests.map((request) => <div className="request-card" key={request.id}><span className={`avatar ${toneFor(request.fromUsername)}`}>{initials(request.fromName)}<i className="online" /></span><div><strong>{request.fromName}</strong><p><b>@{request.fromUsername}</b> wants to add you as <b>{request.relation}</b>.</p><span className="category-chip">{request.category}</span></div><div className="request-actions"><button onClick={() => { void onDeclineRequest(request).then((error) => { if (error) setToast(error); }); }}>Decline</button><button className="dark" onClick={() => { void onApproveRequest(request).then((error) => setToast(error || `${request.fromName} is now in your circle.`)); }}>Approve</button></div></div>)}
       </div> : <div className="request-done request-empty"><span>◇</span><strong>No requests yet</strong><p>Relationship and location approvals will appear here.</p></div>}<div className="modal-note">Requests sync automatically across signed-in devices.</div></section></div>}
+
+      {liveLocationOpen && selected?.liveContextShared && <div className="modal-backdrop live-location-backdrop" onMouseDown={() => setLiveLocationOpen(false)}><section className="glass-modal live-location-modal" role="dialog" aria-modal="true" aria-labelledby="live-location-title" onMouseDown={(event) => event.stopPropagation()}><header><div className="live-location-heading"><span className={`avatar compact ${selected.tone}`}>{initials(selected.name)}<i className={selected.online ? "online" : "offline"} /></span><div><span className="live-label"><i /> Live location</span><h2 id="live-location-title">{selected.name}</h2></div></div><button className="close-button" onClick={() => setLiveLocationOpen(false)} aria-label="Close live location">×</button></header><div className="live-location-map-shell">{selectedLocationUrls ? <iframe key={selectedLocationUrls.embed} src={selectedLocationUrls.embed} title={`${selected.name}’s live location map`} loading="eager" referrerPolicy="no-referrer-when-downgrade" /> : <div className="live-location-waiting"><span>⌖</span><strong>Waiting for the first location update</strong><small>This map will appear automatically when {selected.name}’s device reports a location.</small></div>}</div><div className="live-location-summary"><div><span>Current location</span><strong>{selected.location}</strong><small>{selected.eta}</small></div><div className="live-location-facts"><span><small>Status</small><strong>{selected.activity}</strong></span><span><small>Weather</small><strong>{selected.temperature} {selected.weather}</strong></span><span><small>Battery</small><strong>{selected.battery == null ? "Unavailable" : `${selected.battery}%${selected.charging ? " · Charging" : ""}`}</strong></span></div>{selectedLocationUrls && <a href={selectedLocationUrls.external} target="_blank" rel="noreferrer">Open in maps <span>↗</span></a>}</div></section></div>}
 
       {detailsOpen && selected && <div className="modal-backdrop" onMouseDown={() => setDetailsOpen(false)}><section className="glass-modal contact-modal" onMouseDown={(event) => event.stopPropagation()}><div className="modal-handle" /><header><div><span className="kicker">Conversation details</span><h2>{selected.name}</h2></div><button className="close-button" onClick={() => setDetailsOpen(false)}>×</button></header><div className="contact-profile"><span className={`avatar contact-avatar ${selected.tone}`}>{initials(selected.name)}<i className={selected.online ? "online" : "offline"} /></span><strong>{selected.name}</strong><small>@{selected.username}</small></div><div className="contact-settings"><div><span>Relationship</span><strong>{selected.relation}</strong></div><div><span>Circle</span><strong>{selected.category}</strong></div><button onClick={() => { setDetailsOpen(false); toggleLocation(selected); }}><span>Location sharing</span><strong>{selected.locationShared ? selected.parentalControl ? "On · Parental control" : "On" : "Off"} <i>›</i></strong></button></div><button className="danger-button" disabled={selected.contactRemovalLocked} onClick={() => { if (selected.contactRemovalLocked) return; setDetailsOpen(false); setRemoveTarget(selected); }}><span>{selected.contactRemovalLocked ? "◇" : "−"}</span><div><strong>{selected.contactRemovalLocked ? "Contact protected" : "Remove from circle"}</strong><small>{selected.contactRemovalLocked ? "Parental control prevents either person from deleting this contact" : "Ends chat access and location sharing"}</small></div><b>{selected.contactRemovalLocked ? "Locked" : "›"}</b></button></section></div>}
       {deleteTarget && <div className="modal-backdrop" onMouseDown={() => setDeleteTarget(null)}><section className="glass-modal safety-modal remove-modal" role="alertdialog" aria-modal="true" aria-labelledby="remove-message-title" onMouseDown={(event) => event.stopPropagation()}><div className="safety-icon remove-icon">⊘</div><span className="kicker">Remove message</span><h2 id="remove-message-title">Remove for everyone?</h2><p>The message content will disappear from both sides of this conversation. This cannot be undone.</p><div className="remove-actions"><button className="secondary-button" onClick={() => setDeleteTarget(null)}>Keep message</button><button className="danger-confirm" onClick={() => { void deleteMessage(deleteTarget); }}>Remove message</button></div></section></div>}

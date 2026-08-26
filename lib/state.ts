@@ -151,6 +151,8 @@ export async function getAccountState(user: SessionUser) {
       contactRemovalLocked: Number(row.parental_control) === 1 || Number(row.reverse_parental_control) === 1,
       activity: approved ? online ? "Online" : lastSeenLabel(lastSeenAt, now) : "Pending",
       speed: liveContextShared ? "Live" : "—",
+      latitude,
+      longitude,
       location: row.location_label ? String(row.location_label) : locationFallback,
       eta: contextAge(row.updated_at == null ? null : Number(row.updated_at)),
       temperature: row.temperature == null ? "—" : `${Math.round(Number(row.temperature))}°`,
