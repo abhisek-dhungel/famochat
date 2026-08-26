@@ -4,7 +4,7 @@
 
 import { useRef, useState } from "react";
 import type { MouseEvent as ReactMouseEvent } from "react";
-import { cloudinaryAudioFallbackUrl, cloudinaryImageDisplayUrl, type CloudinaryResourceType, type MediaMessageKind } from "@/lib/media";
+import { cloudinaryAudioFallbackUrl, type CloudinaryResourceType, type MediaMessageKind } from "@/lib/media";
 
 export type ChatMessage = {
   id: number;
@@ -78,21 +78,21 @@ function AudioMessage({ message }: { message: ChatMessage }) {
 
 function PhotoMessage({ message, onPreview }: { message: ChatMessage; onPreview?: (message: ChatMessage) => void }) {
   const originalSource = message.mediaUrl ?? "";
-  const [source, setSource] = useState(cloudinaryImageDisplayUrl(originalSource));
+  const [useProxy, setUseProxy] = useState(false);
   const [failed, setFailed] = useState(false);
-  const [loaded, setLoaded] = useState(false);
+  const source = useProxy ? `/api/media/image?url=${encodeURIComponent(originalSource)}` : originalSource;
 
-  if (failed || !originalSource) {
+  if (failed || !source) {
     return <span className="media-unavailable">{message.deliveryState === "sending" ? "Preparing photo…" : "Photo unavailable"}</span>;
   }
-  const image = <img ref={(element) => { if (element?.complete && element.naturalWidth > 0 && !loaded) setLoaded(true); }} className="message-image" src={source} alt={message.fileName || "Shared photo"} loading={message.deliveryState ? "eager" : "lazy"} decoding="async" onLoad={() => setLoaded(true)} onError={() => { setLoaded(false); if (source !== originalSource) setSource(originalSource); else setFailed(true); }} />;
-  return onPreview ? <button type="button" className={`message-image-button ${loaded ? "is-loaded" : "is-loading"}`} onClick={() => onPreview(message)} aria-label={`Open ${message.fileName || "shared photo"} fullscreen`}>{image}</button> : image;
+  const image = <img className="message-image" src={source} alt={message.fileName || "Shared photo"} loading="eager" decoding="async" referrerPolicy="no-referrer" onError={() => { if (!useProxy && originalSource.startsWith("https://res.cloudinary.com/")) setUseProxy(true); else setFailed(true); }} />;
+  return onPreview ? <button type="button" className="message-image-button" onClick={() => onPreview(message)} aria-label={`Open ${message.fileName || "shared photo"} fullscreen`}>{image}</button> : image;
 }
 
 export function MediaMessage({ message, onPreview }: { message: ChatMessage; onPreview?: (message: ChatMessage) => void }) {
   const source = message.mediaUrl;
   if (!source) return <span className="media-unavailable">Attachment unavailable</span>;
-  if (message.kind === "image") return <PhotoMessage key={source} message={message} onPreview={onPreview} />;
+  if (message.kind === "image") return <PhotoMessage message={message} onPreview={onPreview} />;
   if (message.kind === "video") return <video className="message-video" src={source} controls playsInline preload="metadata" aria-label={message.fileName || "Shared video"} />;
   if (message.kind === "document") {
     const extension = message.fileName?.split(".").pop()?.slice(0, 4).toUpperCase() || "FILE";

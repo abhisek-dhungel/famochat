@@ -78,6 +78,10 @@ test("renders Instagram-style photo cards with delivery feedback and a custom vo
   assert.doesNotMatch(mediaMessage, /<audio[^>]*controls/);
   assert.match(css, /\.bubble\.media-bubble\.visual-media-bubble \{[^}]*width:\s*min\(320px, 72vw\)/);
   assert.match(css, /\.message-image,[^}]*object-fit:\s*cover/);
+  assert.doesNotMatch(css, /\.message-image[^}]*opacity:\s*0/);
+  assert.match(mediaMessage, /loading="eager"/);
+  assert.doesNotMatch(mediaMessage, /cloudinaryImageDisplayUrl/);
+  assert.match(mediaMessage, /\/api\/media\/image\?url=/);
   assert.match(page, /className="media-send-progress"/);
   assert.match(page, /Couldn’t send photo/);
   assert.match(page, /Retry/);
@@ -86,8 +90,9 @@ test("renders Instagram-style photo cards with delivery feedback and a custom vo
 });
 
 test("verifies and persists complete Cloudinary media metadata", async () => {
-  const [signatureRoute, actions, database, state] = await Promise.all([
+  const [signatureRoute, imageRoute, actions, database, state] = await Promise.all([
     readFile(new URL("app/api/media/signature/route.ts", root), "utf8"),
+    readFile(new URL("app/api/media/image/route.ts", root), "utf8"),
     readFile(new URL("app/api/actions/route.ts", root), "utf8"),
     readFile(new URL("db/index.ts", root), "utf8"),
     readFile(new URL("lib/state.ts", root), "utf8"),
@@ -95,6 +100,8 @@ test("verifies and persists complete Cloudinary media metadata", async () => {
   assert.match(signatureRoute, /cloudinaryResourceType\(kind\)/);
   assert.match(actions, /verifyCloudinaryUploadSignature/);
   assert.match(actions, /isCloudinaryDeliveryUrl/);
+  assert.match(imageRoute, /parsed\.hostname !== "res\.cloudinary\.com"/);
+  assert.match(imageRoute, /sender_id = \? OR recipient_id = \?/);
   assert.match(database, /ensureMessageColumns/);
   assert.match(database, /media_resource_type TEXT/);
   assert.match(state, /serializeMessageRow/);

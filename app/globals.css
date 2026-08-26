@@ -222,11 +222,8 @@ button:disabled { cursor: not-allowed; opacity: .45; }
 .media-bubble time { padding: 0 8px 4px; }
 .image-media-bubble time { position: absolute; z-index: 4; right: 8px; bottom: 8px; margin: 0; padding: 4px 7px; border-radius: 99px; background: rgba(0,0,0,.58); color: white; backdrop-filter: blur(7px); }
 .image-media-bubble.is-sending time, .image-media-bubble.is-failed time { visibility: hidden; }
-.message-image-button { position: relative; width: 100%; min-height: 168px; display: block; padding: 0; overflow: hidden; border: 0; border-radius: 22px; background: #dededb; cursor: zoom-in; }
-.message-image-button.is-loading::after { content: ""; position: absolute; inset: 0; background: linear-gradient(105deg, transparent 30%, rgba(255,255,255,.38) 47%, transparent 64%); transform: translateX(-100%); animation: image-shimmer 1.25s ease-in-out infinite; }
+.message-image-button { position: relative; width: 100%; display: block; padding: 0; overflow: hidden; border: 0; border-radius: 22px; background: #dededb; cursor: zoom-in; }
 .message-image, .message-video { display: block; width: 100%; height: auto; max-height: 440px; border-radius: 22px; object-fit: cover; background: #e4e4e2; }
-.message-image-button.is-loading .message-image { min-height: 168px; opacity: 0; }
-.message-image-button.is-loaded { min-height: 0; }
 .media-send-overlay { position: absolute; z-index: 3; inset: 0; display: grid; place-items: center; border-radius: inherit; background: rgba(0,0,0,.22); pointer-events: none; }
 .media-send-progress { --upload-progress: 0deg; position: relative; width: 54px; height: 54px; display: grid; place-items: center; border-radius: 50%; background: conic-gradient(#fff var(--upload-progress), rgba(255,255,255,.28) 0); box-shadow: 0 5px 20px rgba(0,0,0,.2); }
 .media-send-progress::before { content: ""; position: absolute; inset: 4px; border-radius: inherit; background: rgba(18,18,18,.78); }
@@ -389,7 +386,6 @@ button:disabled { cursor: not-allowed; opacity: .45; }
 @keyframes modal-in { from { opacity: 0; transform: translateY(10px) scale(.98); } }
 @keyframes toast-in { from { opacity: 0; transform: translate(-50%,12px); } }
 @keyframes record-pulse { 50% { opacity: .35; transform: scale(.82); } }
-@keyframes image-shimmer { to { transform: translateX(100%); } }
 
 @media (max-width: 1030px) {
   .welcome-copy { padding-left: 48px; }
