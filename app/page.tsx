@@ -3,7 +3,7 @@
 /* eslint-disable jsx-a11y/no-autofocus, jsx-a11y/no-noninteractive-element-interactions, jsx-a11y/no-static-element-interactions, react-hooks/purity */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { ChangeEvent, FormEvent } from "react";
+import type { ChangeEvent, CSSProperties, FormEvent } from "react";
 import { MediaMessage, type ChatMessage } from "@/components/media-message";
 import { parseCloudinaryUploadResponse, type CloudinaryResourceType, type MediaMessageKind } from "@/lib/media";
 
@@ -27,6 +27,15 @@ type OutgoingMessage = {
   mimeType?: string;
   fileName?: string;
   duration?: number;
+};
+
+type PendingAttachment = {
+  id: number;
+  partnerId: string;
+  partnerUsername: string;
+  file: File;
+  kind: "image" | "video" | "document";
+  message: Message;
 };
 
 type Person = {
@@ -184,7 +193,8 @@ async function accountRequest(url: string, init?: RequestInit) {
   return data.account ?? null;
 }
 
-async function uploadToCloudinary(file: Blob, kind: Exclude<MessageKind, "text">, fileName: string) {
+async function uploadToCloudinary(file: Blob, kind: Exclude<MessageKind, "text">, fileName: string, onProgress?: (progress: number) => void) {
+  onProgress?.(2);
   const signatureResponse = await fetch("/api/media/signature", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -203,6 +213,7 @@ async function uploadToCloudinary(file: Blob, kind: Exclude<MessageKind, "text">
   if (!signatureResponse.ok || !signatureData.cloudName || !signatureData.apiKey || !signatureData.timestamp || !signatureData.folder || !signatureData.resourceType || !signatureData.uploadUrl || !signatureData.signature) {
     throw new Error(signatureData.error || "Media uploads are not configured.");
   }
+  onProgress?.(8);
 
   const form = new FormData();
   form.set("file", file, fileName);
@@ -210,12 +221,37 @@ async function uploadToCloudinary(file: Blob, kind: Exclude<MessageKind, "text">
   form.set("timestamp", String(signatureData.timestamp));
   form.set("folder", signatureData.folder);
   form.set("signature", signatureData.signature);
-  const uploadResponse = await fetch(signatureData.uploadUrl, { method: "POST", body: form });
-  const uploaded = await uploadResponse.json().catch(() => null) as { error?: { message?: string } } | null;
-  if (!uploadResponse.ok || !uploaded) {
-    throw new Error(uploaded?.error?.message || "The attachment could not be uploaded.");
-  }
+  const uploaded = await new Promise<unknown>((resolve, reject) => {
+    const request = new XMLHttpRequest();
+    request.open("POST", signatureData.uploadUrl!);
+    request.responseType = "json";
+    request.upload.onprogress = (event) => {
+      if (!event.lengthComputable) return;
+      onProgress?.(Math.min(90, Math.round(8 + (event.loaded / event.total) * 82)));
+    };
+    request.onerror = () => reject(new Error("The photo upload lost its connection. Try again."));
+    request.onabort = () => reject(new Error("The photo upload was cancelled."));
+    request.onload = () => {
+      const response = request.response as { error?: { message?: string } } | null;
+      if (request.status < 200 || request.status >= 300 || !response) {
+        reject(new Error(response?.error?.message || "The attachment could not be uploaded."));
+        return;
+      }
+      resolve(response);
+    };
+    request.send(form);
+  });
+  onProgress?.(92);
   return parseCloudinaryUploadResponse(uploaded, signatureData.cloudName, signatureData.resourceType);
+}
+
+function PendingMediaStatus({ message, onRetry, onDiscard }: { message: Message; onRetry: () => void; onDiscard: () => void }) {
+  if (!message.deliveryState) return null;
+  const progress = Math.max(0, Math.min(100, Math.round(message.uploadProgress ?? 0)));
+  if (message.deliveryState === "sending") {
+    return <div className="media-send-overlay" role="status" aria-label={`Sending photo, ${progress}% complete`}><span className="media-send-progress" style={{ "--upload-progress": `${progress * 3.6}deg` } as CSSProperties}><b>{progress}%</b></span></div>;
+  }
+  return <div className="media-send-overlay media-send-failed" role="alert"><span>!</span><strong>Couldn’t send photo</strong><small>{message.deliveryError || "Check your connection and try again."}</small><div><button type="button" onClick={onRetry}>Retry</button><button type="button" onClick={onDiscard}>Remove</button></div></div>;
 }
 
 function Brand() {
@@ -375,6 +411,7 @@ function Messenger({ account, onSignOut, onUpdateContact, onSendRequest, onAppro
   const [recordingSeconds, setRecordingSeconds] = useState(0);
   const [previewMessage, setPreviewMessage] = useState<Message | null>(null);
   const [previewZoomed, setPreviewZoomed] = useState(false);
+  const [pendingAttachments, setPendingAttachments] = useState<PendingAttachment[]>([]);
   const photoInputRef = useRef<HTMLInputElement>(null);
   const videoInputRef = useRef<HTMLInputElement>(null);
   const documentInputRef = useRef<HTMLInputElement>(null);
@@ -384,10 +421,14 @@ function Messenger({ account, onSignOut, onUpdateContact, onSendRequest, onAppro
   const recordingStartedRef = useRef(0);
   const recordingTargetRef = useRef("");
   const messagesRef = useRef<HTMLDivElement>(null);
+  const nextPendingIdRef = useRef(-1);
+  const pendingObjectUrlsRef = useRef(new Map<number, string>());
   const emojis = ["❤️", "😂", "🥰", "😊", "👍", "🙏", "😍", "🎉", "😢", "🤗", "🔥", "✨", "💯", "👋", "😘", "🫶"];
 
   const selected = people.find((person) => person.id === selectedId) ?? people.find((person) => person.approved);
   const activeMessages = selected ? messages[selected.id] ?? [] : [];
+  const pendingMessages = selected ? pendingAttachments.filter((attachment) => attachment.partnerId === selected.id).map((attachment) => attachment.message) : [];
+  const displayedMessages = [...activeMessages, ...pendingMessages].sort((left, right) => left.createdAt - right.createdAt || left.id - right.id);
   const filteredPeople = people.filter((person) => `${person.name} ${person.relation} ${person.username}`.toLowerCase().includes(search.toLowerCase()));
   const userInitials = initials(account.name);
 
@@ -409,7 +450,7 @@ function Messenger({ account, onSignOut, onUpdateContact, onSendRequest, onAppro
       if (messageList) messageList.scrollTo({ top: messageList.scrollHeight, behavior: "smooth" });
     });
     return () => window.cancelAnimationFrame(frame);
-  }, [selected?.id, activeMessages.length]);
+  }, [selected?.id, displayedMessages.length]);
 
   useEffect(() => () => {
     if (recorderRef.current && recorderRef.current.state !== "inactive") {
@@ -417,6 +458,8 @@ function Messenger({ account, onSignOut, onUpdateContact, onSendRequest, onAppro
       recorderRef.current.stop();
     }
     recordingStreamRef.current?.getTracks().forEach((track) => track.stop());
+    for (const objectUrl of pendingObjectUrlsRef.current.values()) URL.revokeObjectURL(objectUrl);
+    pendingObjectUrlsRef.current.clear();
   }, []);
 
   useEffect(() => {
@@ -468,24 +511,101 @@ function Messenger({ account, onSignOut, onUpdateContact, onSendRequest, onAppro
     setPreviewMessage(message);
   };
 
-  const sendFile = async (event: ChangeEvent<HTMLInputElement>, kind: "image" | "video" | "document") => {
-    const file = event.target.files?.[0];
+  const updatePendingAttachment = (id: number, patch: Partial<Message>) => {
+    setPendingAttachments((current) => current.map((attachment) => attachment.id === id ? { ...attachment, message: { ...attachment.message, ...patch } } : attachment));
+  };
+
+  const removePendingAttachment = (id: number) => {
+    setPendingAttachments((current) => current.filter((attachment) => attachment.id !== id));
+    const objectUrl = pendingObjectUrlsRef.current.get(id);
+    pendingObjectUrlsRef.current.delete(id);
+    if (objectUrl) window.requestAnimationFrame(() => URL.revokeObjectURL(objectUrl));
+  };
+
+  const uploadPendingAttachment = async (attachment: PendingAttachment) => {
+    updatePendingAttachment(attachment.id, { deliveryState: "sending", deliveryError: undefined, uploadProgress: 2 });
+    try {
+      const uploaded = await uploadToCloudinary(attachment.file, attachment.kind, attachment.file.name, (progress) => {
+        updatePendingAttachment(attachment.id, { uploadProgress: progress });
+      });
+      updatePendingAttachment(attachment.id, { uploadProgress: 96 });
+      const error = await onSendMessage(attachment.partnerUsername, { kind: attachment.kind, text: "", ...uploaded, mimeType: attachment.file.type, fileName: attachment.file.name });
+      if (error) throw new Error(error);
+      removePendingAttachment(attachment.id);
+      setToast(attachment.kind === "image" ? "Photo sent." : attachment.kind === "video" ? "Video sent." : "Document sent.");
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "This attachment could not be uploaded.";
+      updatePendingAttachment(attachment.id, { deliveryState: "failed", deliveryError: message });
+      setToast(message);
+    }
+  };
+
+  const retryPendingAttachment = (id: number) => {
+    const attachment = pendingAttachments.find((item) => item.id === id);
+    if (attachment) void uploadPendingAttachment(attachment);
+  };
+
+  const sendFile = (event: ChangeEvent<HTMLInputElement>, kind: "image" | "video" | "document") => {
+    const files = Array.from(event.target.files ?? []).slice(0, kind === "image" ? 10 : 1);
     event.target.value = "";
     setAttachmentMenuOpen(false);
-    if (!file || !selected) return;
+    if (files.length === 0 || !selected) return;
     const limit = kind === "image" ? 25 * 1024 * 1024 : kind === "video" ? 100 * 1024 * 1024 : 50 * 1024 * 1024;
-    if (file.size > limit) {
-      setToast(kind === "image" ? "Choose a photo smaller than 25 MB." : kind === "video" ? "Choose a video smaller than 100 MB." : "Choose a document smaller than 50 MB.");
+    if (kind !== "image") {
+      const file = files[0];
+      if (file.size > limit) {
+        setToast(kind === "video" ? "Choose a video smaller than 100 MB." : "Choose a document smaller than 50 MB.");
+        return;
+      }
+      const targetUsername = selected.username;
+      void (async () => {
+        try {
+          setToast("Uploading attachment…");
+          const uploaded = await uploadToCloudinary(file, kind, file.name);
+          const error = await onSendMessage(targetUsername, { kind, text: "", ...uploaded, mimeType: file.type, fileName: file.name });
+          if (error) throw new Error(error);
+          setToast(kind === "video" ? "Video sent." : "Document sent.");
+        } catch (error) {
+          setToast(error instanceof Error ? error.message : "This attachment could not be uploaded.");
+        }
+      })();
       return;
     }
-    try {
-      setToast("Uploading attachment…");
-      const uploaded = await uploadToCloudinary(file, kind, file.name);
-      const error = await onSendMessage(selected.username, { kind, text: "", ...uploaded, mimeType: file.type, fileName: file.name });
-      if (error) throw new Error(error);
-      setToast(kind === "image" ? "Photo sent." : kind === "video" ? "Video sent." : "Document sent.");
-    } catch (error) {
-      setToast(error instanceof Error ? error.message : "This attachment could not be uploaded.");
+    for (const file of files) {
+      if (file.size > limit) {
+        setToast(kind === "image" ? "Choose photos smaller than 25 MB each." : kind === "video" ? "Choose a video smaller than 100 MB." : "Choose a document smaller than 50 MB.");
+        continue;
+      }
+      if (kind === "image" && !file.type.startsWith("image/")) {
+        setToast(`${file.name} isn’t a supported photo.`);
+        continue;
+      }
+      const id = nextPendingIdRef.current--;
+      const objectUrl = URL.createObjectURL(file);
+      pendingObjectUrlsRef.current.set(id, objectUrl);
+      const attachment: PendingAttachment = {
+        id,
+        partnerId: selected.id,
+        partnerUsername: selected.username,
+        file,
+        kind,
+        message: {
+          id,
+          senderId: account.username,
+          recipientId: selected.id,
+          text: "",
+          from: "me",
+          createdAt: Date.now() + Math.abs(id) / 1000,
+          kind,
+          mediaUrl: objectUrl,
+          mimeType: file.type,
+          fileName: file.name,
+          deliveryState: "sending",
+          uploadProgress: 2,
+        },
+      };
+      setPendingAttachments((current) => [...current, attachment]);
+      void uploadPendingAttachment(attachment);
     }
   };
 
@@ -576,11 +696,11 @@ function Messenger({ account, onSignOut, onUpdateContact, onSendRequest, onAppro
           <section className="chat-pane">
             {selected ? <><div className="chat-topbar"><button className="mobile-back" onClick={() => setMobileList(true)} aria-label="Back to people">‹</button><button className="desktop-collapse" onClick={() => setCollapsed((value) => !value)} aria-label="Toggle people panel">◫</button><span className={`avatar compact ${selected.tone}`}>{initials(selected.name)}<i className={selected.online ? "online" : "offline"} /></span><div className="chat-title"><strong>{selected.name}</strong><small>{selected.online ? `${selected.activity} · now` : "Offline"}</small></div><button className="circle-action" aria-label={`Call ${selected.name}`} onClick={() => setToast(`Starting a private call with ${selected.name}…`)}>⌁</button><button className="circle-action" aria-label="Conversation details" onClick={() => setDetailsOpen(true)}>•••</button></div>
             {selected.liveContextShared ? <div className="live-card"><div className="live-map" aria-hidden="true"><span className="road road-one" /><span className="road road-two" /><span className="map-pin"><i /></span></div><div className="live-primary"><span className="live-label"><i /> Live context</span><h2>{selected.location}</h2><p>{selected.eta}</p></div><div className="live-stats"><div><span>{selected.activity}</span><strong>{selected.speed}</strong></div><div><span>Weather</span><strong>{selected.temperature} <small>{selected.weather}</small></strong></div><div><span>Battery</span><strong>{selected.battery == null ? "—" : `${selected.battery}%`} <small>{selected.battery == null ? "Unavailable" : selected.charging ? "Charging" : selected.battery > 25 ? "Good" : "Low"}</small></strong></div></div><button className="live-more" aria-label="Open live map" onClick={() => setToast(`${selected.name} is near ${selected.location}.`)}>↗</button></div> : <div className="private-card"><span>◎</span><div><strong>{selected.name}’s live context is private</strong><p>Location, weather, and battery appear here when {selected.name} shares them with you.</p></div><button onClick={() => toggleLocation(selected)}>{selected.locationShared ? "Pause mine" : "Share mine"}</button></div>}
-            <div className="messages" ref={messagesRef} role="log" aria-live="polite" aria-relevant="additions text"><div className="day-label">Today</div>{activeMessages.map((message) => { const kind = message.kind ?? "text"; const visualMedia = kind === "image" || kind === "video"; return <div className={`bubble ${message.from === "me" ? "outgoing" : "incoming"} ${kind !== "text" ? "media-bubble" : ""} ${visualMedia ? "visual-media-bubble" : ""} ${kind === "image" ? "image-media-bubble" : ""} ${kind === "audio" ? "audio-media-bubble" : ""}`} key={message.id}>{kind === "text" ? message.text : <MediaMessage message={message} onPreview={openPhotoPreview} />}<time>{formatMessageTime(message.createdAt, message.from === "me")}</time></div>; })}</div>
+            <div className="messages" ref={messagesRef} role="log" aria-live="polite" aria-relevant="additions text"><div className="day-label">Today</div>{displayedMessages.map((message) => { const kind = message.kind ?? "text"; const visualMedia = kind === "image" || kind === "video"; return <div className={`bubble ${message.from === "me" ? "outgoing" : "incoming"} ${kind !== "text" ? "media-bubble" : ""} ${visualMedia ? "visual-media-bubble" : ""} ${kind === "image" ? "image-media-bubble" : ""} ${kind === "audio" ? "audio-media-bubble" : ""} ${message.deliveryState ? `is-${message.deliveryState}` : ""}`} key={message.id}>{kind === "text" ? message.text : <MediaMessage message={message} onPreview={openPhotoPreview} />}{kind === "image" && <PendingMediaStatus message={message} onRetry={() => retryPendingAttachment(message.id)} onDiscard={() => removePendingAttachment(message.id)} />}<time>{message.deliveryState === "sending" ? `Sending ${Math.round(message.uploadProgress ?? 0)}%` : message.deliveryState === "failed" ? "Not sent" : formatMessageTime(message.createdAt, message.from === "me")}</time></div>; })}</div>
             <form className={`composer ${recording ? "is-recording" : ""}`} onSubmit={sendMessage}>
               <div className="composer-tool attachment-tool">
                 <button type="button" className={`round-action ${attachmentMenuOpen ? "active" : ""}`} aria-label="Share a photo, video, or document" aria-expanded={attachmentMenuOpen} onClick={() => { setAttachmentMenuOpen((value) => !value); setEmojiOpen(false); }}>+</button>
-                <input ref={photoInputRef} hidden type="file" accept="image/*" onChange={(event) => { void sendFile(event, "image"); }} />
+                <input ref={photoInputRef} hidden type="file" accept="image/*" multiple onChange={(event) => sendFile(event, "image")} />
                 <input ref={videoInputRef} hidden type="file" accept="video/*" onChange={(event) => { void sendFile(event, "video"); }} />
                 <input ref={documentInputRef} hidden type="file" accept=".pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.txt,.csv,.rtf,.zip,.pages,.numbers,.key,application/pdf,text/plain,text/csv,application/zip" onChange={(event) => { void sendFile(event, "document"); }} />
                 {attachmentMenuOpen && <div className="attachment-menu" role="menu"><button type="button" role="menuitem" onClick={() => photoInputRef.current?.click()}><i>▧</i><span><strong>Photo</strong><small>Choose an image</small></span></button><button type="button" role="menuitem" onClick={() => videoInputRef.current?.click()}><i>▷</i><span><strong>Video</strong><small>Choose a video</small></span></button><button type="button" role="menuitem" onClick={() => documentInputRef.current?.click()}><i>≡</i><span><strong>Document</strong><small>PDF, Office, text or ZIP</small></span></button></div>}

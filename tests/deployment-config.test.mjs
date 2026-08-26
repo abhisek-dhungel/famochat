@@ -67,16 +67,21 @@ test("formats message timestamps in the viewer's local timezone", async () => {
   assert.match(page, /formatMessageTime\(message\.createdAt/);
 });
 
-test("renders compact photo previews and a custom voice-message waveform", async () => {
-  const [mediaMessage, css] = await Promise.all([
+test("renders Instagram-style photo cards with delivery feedback and a custom voice-message waveform", async () => {
+  const [mediaMessage, page, css] = await Promise.all([
     readFile(new URL("components/media-message.tsx", root), "utf8"),
+    readFile(new URL("app/page.tsx", root), "utf8"),
     readFile(new URL("app/globals.css", root), "utf8"),
   ]);
   assert.match(mediaMessage, /function AudioMessage/);
   assert.match(mediaMessage, /className="audio-waveform"/);
   assert.doesNotMatch(mediaMessage, /<audio[^>]*controls/);
-  assert.match(css, /\.bubble\.media-bubble\.visual-media-bubble \{[^}]*width:\s*min\(300px, 72vw\)/);
+  assert.match(css, /\.bubble\.media-bubble\.visual-media-bubble \{[^}]*width:\s*min\(320px, 72vw\)/);
   assert.match(css, /\.message-image,[^}]*object-fit:\s*cover/);
+  assert.match(page, /className="media-send-progress"/);
+  assert.match(page, /Couldn’t send photo/);
+  assert.match(page, /Retry/);
+  assert.match(css, /\.media-send-overlay \{[^}]*position:\s*absolute/);
   assert.match(css, /\.message-audio audio \{\s*display:\s*none/);
 });
 

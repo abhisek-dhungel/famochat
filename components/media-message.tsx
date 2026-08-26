@@ -22,6 +22,9 @@ export type ChatMessage = {
   mimeType?: string;
   fileName?: string;
   duration?: number;
+  deliveryState?: "sending" | "failed";
+  uploadProgress?: number;
+  deliveryError?: string;
 };
 
 const waveformBars = [12, 20, 16, 27, 18, 31, 22, 14, 25, 34, 19, 28, 16, 23, 32, 20, 13, 26, 35, 22, 17, 29, 21, 14, 24, 18];
@@ -77,16 +80,19 @@ function PhotoMessage({ message, onPreview }: { message: ChatMessage; onPreview?
   const originalSource = message.mediaUrl ?? "";
   const [source, setSource] = useState(cloudinaryImageDisplayUrl(originalSource));
   const [failed, setFailed] = useState(false);
+  const [loaded, setLoaded] = useState(false);
 
-  if (failed || !originalSource) return <span className="media-unavailable">Photo unavailable</span>;
-  const image = <img className="message-image" src={source} alt={message.fileName || "Shared photo"} loading="lazy" decoding="async" onError={() => { if (source !== originalSource) setSource(originalSource); else setFailed(true); }} />;
-  return onPreview ? <button type="button" className="message-image-button" onClick={() => onPreview(message)} aria-label={`Open ${message.fileName || "shared photo"} fullscreen`}>{image}</button> : image;
+  if (failed || !originalSource) {
+    return <span className="media-unavailable">{message.deliveryState === "sending" ? "Preparing photo…" : "Photo unavailable"}</span>;
+  }
+  const image = <img ref={(element) => { if (element?.complete && element.naturalWidth > 0 && !loaded) setLoaded(true); }} className="message-image" src={source} alt={message.fileName || "Shared photo"} loading={message.deliveryState ? "eager" : "lazy"} decoding="async" onLoad={() => setLoaded(true)} onError={() => { setLoaded(false); if (source !== originalSource) setSource(originalSource); else setFailed(true); }} />;
+  return onPreview ? <button type="button" className={`message-image-button ${loaded ? "is-loaded" : "is-loading"}`} onClick={() => onPreview(message)} aria-label={`Open ${message.fileName || "shared photo"} fullscreen`}>{image}</button> : image;
 }
 
 export function MediaMessage({ message, onPreview }: { message: ChatMessage; onPreview?: (message: ChatMessage) => void }) {
   const source = message.mediaUrl;
   if (!source) return <span className="media-unavailable">Attachment unavailable</span>;
-  if (message.kind === "image") return <PhotoMessage message={message} onPreview={onPreview} />;
+  if (message.kind === "image") return <PhotoMessage key={source} message={message} onPreview={onPreview} />;
   if (message.kind === "video") return <video className="message-video" src={source} controls playsInline preload="metadata" aria-label={message.fileName || "Shared video"} />;
   if (message.kind === "document") {
     const extension = message.fileName?.split(".").pop()?.slice(0, 4).toUpperCase() || "FILE";
